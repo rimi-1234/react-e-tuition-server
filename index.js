@@ -66,7 +66,8 @@ async function run() {
     const db = client.db('etuition_db');
     const usersCollection = db.collection('users');           // students/tutors/admin
     const tuitionsCollection = db.collection('tuitions');   // tuition posts
-    const applicationsCollection = db.collection('applications'); 
+    const applicationsCollection = db.collection('applications');
+    const tutorsCollection = db.collection('tutors');
     // const paymentsCollection = db.collection('payments');   // payments (Stripe)
     // // optional: logs collection
     // const logsCollection = db.collection('logs');
@@ -134,8 +135,8 @@ async function run() {
       try {
         const { email, displayName, photoURL, role, phone } = req.body;
         console.log(email, displayName, photoURL, role, phone);
-        console.log(role );
-        
+        console.log(role);
+
 
         // Check if email already exists
         const existingUser = await usersCollection.findOne({ email });
@@ -203,9 +204,11 @@ async function run() {
       const result = await tuitionsCollection.find(query).toArray();
       res.send(result);
     });
-// GET All Tuitions (Supports Search, Filter, Sort)
-app.get('/tuitions/status', async (req, res) => {
-    try {
+    // GET: All Tutors (with search & filters)
+
+    // GET All Tuitions (Supports Search, Filter, Sort)
+    app.get('/tuitions/status', async (req, res) => {
+      try {
         const { search, status, filterClass, sort, page = 1, limit = 8 } = req.query;
 
         // 1. Convert page/limit to numbers
@@ -219,88 +222,208 @@ app.get('/tuitions/status', async (req, res) => {
         if (status) query.status = status;
         if (filterClass) query.class = { $regex: filterClass, $options: 'i' };
         if (search) {
-            query.$or = [
-                { subject: { $regex: search, $options: 'i' } },
-                { location: { $regex: search, $options: 'i' } }
-            ];
+          query.$or = [
+            { subject: { $regex: search, $options: 'i' } },
+            { location: { $regex: search, $options: 'i' } }
+          ];
         }
 
         // 3. Sorting
-        let sortOptions = { _id: -1 }; 
+        let sortOptions = { _id: -1 };
         if (sort === 'salary_asc') sortOptions = { budget: 1 };
         else if (sort === 'salary_desc') sortOptions = { budget: -1 };
         else if (sort === 'oldest') sortOptions = { _id: 1 };
 
         // 4. Fetch Data with Pagination
         const tuitions = await tuitionsCollection
-            .find(query)
-            .sort(sortOptions)
-            .skip(skip)
-            .limit(limitNumber)
-            .toArray();
+          .find(query)
+          .sort(sortOptions)
+          .skip(skip)
+          .limit(limitNumber)
+          .toArray();
 
         // 5. Get Total Count (for calculating total pages on frontend)
         const total = await tuitionsCollection.countDocuments(query);
 
         res.send({ tuitions, total });
 
-    } catch (error) {
+      } catch (error) {
         console.error(error);
         res.status(500).send({ message: "Error fetching tuitions" });
-    }
-});
+      }
+    });
 
-app.get('/tuitions/:id', async (req, res) => {
-    try {
+    app.get('/tuitions/:id', async (req, res) => {
+      try {
         const id = req.params.id;
-        
+
         // Validate ID format to prevent server crash
         if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid ID format" });
+          return res.status(400).send({ message: "Invalid ID format" });
         }
 
         const query = { _id: new ObjectId(id) };
         const result = await tuitionsCollection.findOne(query);
-        
+
         if (!result) {
-            return res.status(404).send({ message: "Tuition not found" });
+          return res.status(404).send({ message: "Tuition not found" });
         }
 
         res.send(result);
-    } catch (error) {
+      } catch (error) {
         console.error(error);
         res.status(500).send({ message: "Error fetching tuition details" });
-    }
-});
-// --- Applications Collection ---
+      }
+    });
+    // --- Applications Collection ---
 
 
-// POST: Create a new application
-app.post('/applications', async (req, res) => {
-    try {
-        const application = req.body;
-        
-        // 1. (Optional) Check if user already applied to this job
-        const query = { 
-            tuitionId: application.tuitionId, 
-            tutorEmail: application.tutorEmail 
+    // POST: Create a new application
+    app.post('/applications', async (req, res) => {
+      try {
+        const applicationData = req.body;
+
+        // 1. Check for duplicate application
+        const query = {
+          tuitionId: applicationData.tuitionId,
+          tutorEmail: applicationData.tutorEmail
         };
         const existingApplication = await applicationsCollection.findOne(query);
-        
+
         if (existingApplication) {
-            return res.status(400).send({ message: "You have already applied to this tuition!" });
+          return res.status(400).send({ message: "You have already applied to this tuition!" });
         }
 
-        // 2. Insert Application
-        const result = await applicationsCollection.insertOne(application);
-        res.send(result);
+        // 2. Verify Tutor exists in DB
+        const tutorProfile = await usersCollection.findOne({ email: applicationData.tutorEmail });
 
-    } catch (error) {
-        console.error(error);
+        if (!tutorProfile) {
+          return res.status(404).send({ message: "User profile not found." });
+        }
+
+        // 3. Construct Final Application
+        const newApplication = {
+          tuitionId: applicationData.tuitionId,
+          tuitionSubject: applicationData.tuitionSubject,
+          tuitionLocation: applicationData.tuitionLocation,
+          recruiterEmail: applicationData.recruiterEmail,
+          tutorEmail: tutorProfile.email,
+          tutorName: tutorProfile.displayName,
+          tutorImage: tutorProfile.photoURL,
+          qualifications: applicationData.qualifications || tutorProfile.qualifications || "N/A",
+          experience: applicationData.experience || tutorProfile.experience || "N/A",
+          expectedSalary: applicationData.expectedSalary || tutorProfile.expectedSalary || "Negotiable",
+          status: 'Pending',
+          appliedDate: new Date()
+        };
+
+        // --- 4. INSERT INTO BOTH COLLECTIONS ---
+
+        // A. Insert into Applications Collection (Primary)
+        // We name this variable 'appResult'
+        const appResult = await applicationsCollection.insertOne(newApplication);
+
+        // B. Insert into Tutors Collection (Secondary)
+        // We name this variable 'tutorResult'
+        const tutorResult = await tutorsCollection.insertOne(newApplication);
+
+        // 5. Send Response
+        // We send both results back so the frontend checks if 'acknowledged' is true
+        res.send({
+          insertedId: appResult.insertedId, // Frontend usually looks for this
+          appResult,
+          tutorResult
+        });
+
+      } catch (error) {
+        console.error("Error submitting application:", error);
         res.status(500).send({ message: "Internal Server Error" });
-    }
-});
+      }
+    });
+    // GET /users/tutors - Fetch Tutors from tutorsCollection
+    // Make sure this is defined at the top of your file!
+    // Check your MongoDB Atlas: Is the collection named "tutor", "tutors", or "applications"?
+    // const tutorsCollection = client.db("yourDBName").collection("tutors"); 
 
+    // Make sure this is defined at the top of your file!
+    // Check your MongoDB Atlas: Is the collection named "tutor", "tutors", or "applications"?
+    // const tutorsCollection = client.db("yourDBName").collection("tutors"); 
+
+    app.get('/users/tutors', async (req, res) => {
+      try {
+        const { search, subject, location, page = 1, limit = 8 } = req.query;
+
+        console.log("--- New Request to /users/tutors ---");
+        console.log("Filters received:", { search, subject, location });
+
+        // 1. Build Query
+        const query = {};
+
+        // Search by Name
+        if (search) {
+          query.tutorName = { $regex: search, $options: 'i' };
+        }
+
+        // Filter by Subject
+        if (subject) {
+          query.tuitionSubject = { $regex: subject, $options: 'i' };
+        }
+
+        // Filter by Location
+        if (location) {
+          query.tuitionLocation = { $regex: location, $options: 'i' };
+        }
+
+
+
+        // 2. Pagination
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+        const skip = (pageNumber - 1) * limitNumber;
+
+        // 3. Fetch Data
+        const rawTutors = await tutorsCollection.find(query)
+          .skip(skip)
+          .limit(limitNumber)
+          .toArray();
+
+        // DEBUG: See if data was found
+        console.log(`Found ${rawTutors.length} tutors in DB`);
+        if (rawTutors.length === 0) {
+
+        }
+
+        const total = await tutorsCollection.countDocuments(query);
+
+        // 4. Transformation
+        const tutors = rawTutors.map(tutor => ({
+          _id: tutor._id,
+          name: tutor.tutorName,
+          image: tutor.tutorImage,
+          subject: tutor.tuitionSubject,
+          location: tutor.tuitionLocation,
+          experience: tutor.experience,
+          salary: tutor.expectedSalary, // Included based on your previous data
+
+          // 1. Status Added
+          status: tutor.status,
+
+          // 2. Date Added (Mapping 'appliedDate' to a 'date' key)
+          date: tutor.appliedDate,
+
+          tuitionId: tutor.tuitionId
+        }));
+
+        res.send({
+          tutors,
+          total
+        });
+
+      } catch (error) {
+        console.error("Error fetching tutors:", error);
+        res.status(500).send({ message: "Error fetching tutors" });
+      }
+    });
     // // get tuitions - public with filters, search, pagination
     // app.get('/tuitions', async (req, res) => {
     //   const { subject, className, location, page = 1, limit = 10, q, sort } = req.query;
@@ -399,16 +522,16 @@ app.post('/applications', async (req, res) => {
     });
 
     // 3. Approve/Reject Tuition
-   // 1. GET All Tuitions (for Admin Dashboard)
+    // 1. GET All Tuitions (for Admin Dashboard)
     // This fetches every single post regardless of status (Pending/Approved/Rejected)
-    app.get('/tuitions', verifyFBToken,verifyAdmin, async (req, res) => {
+    app.get('/tuitions', verifyFBToken, verifyAdmin, async (req, res) => {
       // Optional: If you want to filter by studentEmail query (for student dashboard)
       const studentEmail = req.query.studentEmail;
       let query = {};
       if (studentEmail) {
         query = { studentEmail: studentEmail };
       }
-      
+
       const result = await tuitionsCollection.find(query).toArray();
       res.send(result);
     });
@@ -416,10 +539,10 @@ app.post('/applications', async (req, res) => {
     // 2. PATCH Tuition Status (Approve/Reject)
     app.patch('/tuitions/status/:id', verifyFBToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const { status } = req.body; 
+      const { status } = req.body;
       console.log(status);
       // Expecting { status: 'Approved' } or { status: 'Rejected' }
-      
+
       const filter = { _id: new ObjectId(id) };
       const updateDoc = {
         $set: {
@@ -430,18 +553,18 @@ app.post('/applications', async (req, res) => {
       const result = await tuitionsCollection.updateOne(filter, updateDoc);
       res.send(result);
     });
-   
-    // Get user role by email
-app.get('/users/:email/role', async (req, res) => {
-    const email = req.params.email.toLowerCase();
-    console.log(email);
-    
 
-    const user = await usersCollection.findOne({ email });
-    console.log(user);
-    
-    res.send({ role: user?.role || 'Student' });
-});
+    // Get user role by email
+    app.get('/users/:email/role', async (req, res) => {
+      const email = req.params.email.toLowerCase();
+      console.log(email);
+
+
+      const user = await usersCollection.findOne({ email });
+
+
+      res.send({ role: user?.role || 'Student' });
+    });
 
 
 
