@@ -3,7 +3,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-// const stripe = require('stripe')(process.env.STRIPE_SECRET);
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const crypto = require('crypto');
 const admin = require('firebase-admin');
 const { log } = require('console');
@@ -48,9 +48,13 @@ const client = new MongoClient(uri, {
 // Firebase token verification middleware
 const verifyFBToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
+
+ 
   if (!authHeader) return res.status(401).send({ message: 'unauthorized access' });
   try {
     const idToken = authHeader.split(' ')[1];
+    
+    
     const decoded = await admin.auth().verifyIdToken(idToken);
     req.decoded_email = decoded.email;
     req.decoded_uid = decoded.uid;
@@ -62,13 +66,13 @@ const verifyFBToken = async (req, res, next) => {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     const db = client.db('etuition_db');
     const usersCollection = db.collection('users');           // students/tutors/admin
     const tuitionsCollection = db.collection('tuitions');   // tuition posts
     const applicationsCollection = db.collection('applications');
     const tutorsCollection = db.collection('tutors');
-    // const paymentsCollection = db.collection('payments');   // payments (Stripe)
+    const paymentsCollection = db.collection('payments'); 
     // // optional: logs collection
     // const logsCollection = db.collection('logs');
 
@@ -95,7 +99,7 @@ async function run() {
     const verifyTutor = async (req, res, next) => {
       const email = req.decoded_email;
       const user = await usersCollection.findOne({ email });
-      if (!user || user.role !== 'tutor') return res.status(403).send({ message: 'forbidden access' });
+      if (!user || user.role !== 'Tutor') return res.status(403).send({ message: 'forbidden access' });
       req.user = user;
       next();
     };
@@ -168,18 +172,7 @@ async function run() {
       }
     });
 
-    // admin change role
-    // app.patch('/users/:id/role', verifyFBToken, verifyAdmin, async (req, res) => {
-    //   const id = req.params.id;
-    //   const roleInfo = req.body;
-    //   const query = { _id: new ObjectId(id) };
-    //   const result = await usersCollection.updateOne(query, { $set: { role: roleInfo.role }});
-    //   res.send(result);
-    // });
-
-    // /* -------------------------
-    //    Tuitions routes
-    // -------------------------*/
+  
     // // create tuition - student only
     app.post('/tuitions', verifyFBToken, verifyStudent, async (req, res) => {
       const tuition = req.body;
@@ -340,14 +333,7 @@ async function run() {
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
-    // GET /users/tutors - Fetch Tutors from tutorsCollection
-    // Make sure this is defined at the top of your file!
-    // Check your MongoDB Atlas: Is the collection named "tutor", "tutors", or "applications"?
-    // const tutorsCollection = client.db("yourDBName").collection("tutors"); 
-
-    // Make sure this is defined at the top of your file!
-    // Check your MongoDB Atlas: Is the collection named "tutor", "tutors", or "applications"?
-    // const tutorsCollection = client.db("yourDBName").collection("tutors"); 
+   
 
     app.get('/users/tutors', async (req, res) => {
       try {
@@ -424,52 +410,51 @@ async function run() {
         res.status(500).send({ message: "Error fetching tutors" });
       }
     });
-    // // get tuitions - public with filters, search, pagination
-    // app.get('/tuitions', async (req, res) => {
-    //   const { subject, className, location, page = 1, limit = 10, q, sort } = req.query;
-    //   const query = {};
+    // GET: Fetch Applications Received by a Student (Recruiter)
+app.get('/applications/received', verifyFBToken,verifyStudent, async (req, res) => {
+    try {
+        const email = req.query.email;
+        console.log(email,req.user.email);
+        
 
-    //   if (subject) query.subject = { $regex: subject, $options: 'i' };
-    //   if (className) query.className = className;
-    //   if (location) query.location = { $regex: location, $options: 'i' };
-    //   if (q) {
-    //     query.$or = [
-    //       { title: { $regex: q, $options: 'i' } },
-    //       { description: { $regex: q, $options: 'i' } },
-    //       { subject: { $regex: q, $options: 'i' } },
-    //     ];
-    //   }
+        // Security Check
+        if (req.user.email !== email) {
+            return res.status(403).send({ message: 'Forbidden access' });
+        }
 
-    //   const skip = (parseInt(page) - 1) * parseInt(limit);
-    //   const cursor = tuitionsCollection.find(query).sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit));
-    //   const data = await cursor.toArray();
-    //   const total = await tuitionsCollection.countDocuments(query);
-    //   res.send({ data, total, page: parseInt(page) });
-    // });
+        // Find applications where the logged-in user is the recruiter
+        const query = { recruiterEmail: email };
+        console.log(query);
+        
+      
+        const result = await applicationsCollection.find(query).toArray();
+        console.log(result);
+        
+        
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: error.message });
+    }
+});
 
-    // // get one tuition
-    // app.get('/tuitions/:id', async (req, res) => {
-    //   const id = req.params.id;
-    //   const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(id) });
-    //   res.send(tuition);
-    // });
+// PATCH: Update Application Status (Approve/Reject)
+app.patch('/applications/status/:id', verifyFBToken, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { status } = req.body; // Expecting { status: 'approved' } or { status: 'rejected' }
+        
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = {
+            $set: { status: status }
+        };
 
-    // // update tuition (student who created it)
-    // app.put('/tuitions/:id', verifyFBToken, verifyStudent, async (req, res) => {
-    //   const id = req.params.id;
-    //   const updates = req.body;
-    //   const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(id) });
-    //   if (!tuition) return res.status(404).send({ message: 'tuition not found' });
-    //   if (tuition.studentEmail !== req.decoded_email) return res.status(403).send({ message: 'forbidden' });
-    //   // only allow editing when still pending or rejected
-    //   if (tuition.status === 'approved') return res.status(400).send({ message: 'cannot edit approved tuition' });
-
-    //   const result = await tuitionsCollection.updateOne({ _id: new ObjectId(id) }, { $set: updates });
-    //   await log('tuition_updated', { tuitionId: id, by: req.decoded_email });
-    //   res.send(result);
-    // });
-
-    // delete tuition (student)
+        const result = await applicationsCollection.updateOne(filter, updateDoc);
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: error.message });
+    }
+});
+   
     app.delete('/tuitions/:id', verifyFBToken, verifyStudent, async (req, res) => {
       const id = req.params.id;
       const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(id) });
@@ -540,7 +525,7 @@ async function run() {
     app.patch('/tuitions/status/:id', verifyFBToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const { status } = req.body;
-      console.log(status);
+     
       // Expecting { status: 'Approved' } or { status: 'Rejected' }
 
       const filter = { _id: new ObjectId(id) };
@@ -557,7 +542,7 @@ async function run() {
     // Get user role by email
     app.get('/users/:email/role', async (req, res) => {
       const email = req.params.email.toLowerCase();
-      console.log(email);
+    
 
 
       const user = await usersCollection.findOne({ email });
@@ -566,228 +551,232 @@ async function run() {
       res.send({ role: user?.role || 'Student' });
     });
 
+  
+    app.get('/applications/my-applications', verifyFBToken,verifyTutor, async (req, res) => {
+    try {
+        const email = req.query.email;
+        console.log(email);
+        
+        console.log(req.user.email,email);
+        
+        // Security: Ensure token matches email
+        if (req.user.email !== email) {
+            return res.status(403).send({ message: 'Forbidden access' });
+        }
 
+        const query = { tutorEmail: email };
+        const result = await applicationsCollection.find(query).toArray();
+        console.log(result);
+        
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: error.message });
+    }
+});
 
+// 2. DELETE: Withdraw Application
+app.delete('/applications/:id', verifyFBToken, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+        
+        const result = await applicationsCollection.deleteOne(query);
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: error.message });
+    }
+});
 
-    // /* -------------------------
-    //    Applications routes (tutors apply)
-    // -------------------------*/
-    // // tutor applies to a tuition
-    // app.post('/applications', verifyFBToken, verifyTutor, async (req, res) => {
-    //   const application = req.body; // { tuitionId, qualifications, experience, expectedSalary }
-    //   application.tutorEmail = req.decoded_email;
-    //   application.tutorId = req.user?._id || null;
-    //   application.status = 'pending'; // pending student approval + payment
-    //   application.createdAt = new Date();
-    //   const result = await applicationsCollection.insertOne(application);
-    //   await log('application_created', { applicationId: result.insertedId, tuitionId: application.tuitionId, by: application.tutorEmail });
-    //   res.send(result);
-    // });
+// 3. PATCH: Update Application (Salary)
+app.patch('/applications/:id', verifyFBToken, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { expectedSalary } = req.body;
 
-    // // student view applications for a tuition (only the owning student)
-    // app.get('/tuitions/:id/applications', verifyFBToken, verifyStudent, async (req, res) => {
-    //   const tuitionId = req.params.id;
-    //   const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(tuitionId) });
-    //   if (!tuition) return res.status(404).send({ message: 'tuition not found' });
-    //   if (tuition.studentEmail !== req.decoded_email) return res.status(403).send({ message: 'forbidden' });
+        // Create filter: Find by ID
+        // Optional: You can add { status: 'pending' } to ensure they can't edit approved jobs
+        const filter = { _id: new ObjectId(id) };
 
-    //   const apps = await applicationsCollection.find({ tuitionId }).sort({ createdAt: -1 }).toArray();
-    //   res.send(apps);
-    // });
+        const updateDoc = {
+            $set: {
+                expectedSalary: expectedSalary
+            }
+        };
 
-    // // student approve application -> triggers payment (student must be logged)
-    // // we'll create a checkout session endpoint (student calls to get session url)
-    // app.post('/payment-checkout-session', verifyFBToken, verifyStudent, async (req, res) => {
-    //   const { applicationId, tuitionId, amount } = req.body;
-    //   // validate application and tuition
-    //   const application = await applicationsCollection.findOne({ _id: new ObjectId(applicationId) });
-    //   const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(tuitionId) });
-    //   if (!application || !tuition) return res.status(404).send({ message: 'not found' });
-    //   if (tuition.studentEmail !== req.decoded_email) return res.status(403).send({ message: 'forbidden' });
+        const result = await applicationsCollection.updateOne(filter, updateDoc);
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: error.message });
+    }
+});
+console.log(process.env.CLIENT_URL);
 
-    //   // create minimal metadata
-    //   const bookingId = generateBookingId();
+app.post('/create-checkout-session', verifyFBToken, verifyStudent, async (req, res) => {
+    try {
+        const { applicationId, tuitionId } = req.body;
 
-    //   const session = await stripe.checkout.sessions.create({
-    //     line_items: [
-    //       {
-    //         price_data: {
-    //           currency: 'usd',
-    //           unit_amount: Math.round(parseFloat(amount) * 100), // amount in cents
-    //           product_data: {
-    //             name: `Tuition Payment for ${tuition.subject} (${tuition.className || ''})`
-    //           }
-    //         },
-    //         quantity: 1
-    //       }
-    //     ],
-    //     mode: 'payment',
-    //     metadata: {
-    //       applicationId: applicationId.toString(),
-    //       tuitionId: tuitionId.toString(),
-    //       bookingId,
-    //     },
-    //     customer_email: req.decoded_email,
-    //     success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-    //     cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`
-    //   });
+        // 1. Validate IDs
+        if (!ObjectId.isValid(applicationId) || !ObjectId.isValid(tuitionId)) {
+            return res.status(400).send({ message: 'Invalid IDs' });
+        }
 
-    //   // Optionally save a pending payment record
-    //   await paymentsCollection.insertOne({
-    //     tuitionId,
-    //     applicationId,
-    //     bookingId,
-    //     studentEmail: req.decoded_email,
-    //     amount: parseFloat(amount),
-    //     status: 'pending',
-    //     createdAt: new Date(),
-    //     stripeSessionId: session.id
-    //   });
+        // 2. Fetch Application & Tuition
+        const application = await applicationsCollection.findOne({ _id: new ObjectId(applicationId) });
+        const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(tuitionId) });
 
-    //   res.send({ url: session.url });
-    // });
+        if (!application || !tuition) {
+            return res.status(404).send({ message: 'Not found' });
+        }
 
-    // // route to confirm payment after redirect (you used similar logic before)
-    // // this endpoint fetches the session and updates DB (student can be redirected here)
-    // app.patch('/payment-success', async (req, res) => {
-    //   const sessionId = req.query.session_id;
-    //   if (!sessionId) return res.status(400).send({ message: 'missing session id' });
+        // 3. Security Check
+        if (tuition.studentEmail !== req.decoded_email) {
+            return res.status(403).send({ message: 'Forbidden' });
+        }
+        if (application.status === 'Approved') {
+            return res.status(400).send({ message: 'Already booked' });
+        }
 
-    //   const session = await stripe.checkout.sessions.retrieve(sessionId);
-    //   const paymentIntentId = session.payment_intent;
-    //   const metadata = session.metadata || {};
-    //   const applicationId = metadata.applicationId;
-    //   const tuitionId = metadata.tuitionId;
-    //   const bookingId = metadata.bookingId;
+        // ---------------------------------------------------------
+        // 🆕 NEW STEP: Get Student ID and Tutor ID for Metadata
+        // ---------------------------------------------------------
+        
+        // A. Get Student (Payer) ID from their email
+        const studentUser = await usersCollection.findOne({ email: req.decoded_email });
+        const studentId = studentUser ? studentUser._id.toString() : null;
 
-    //   // avoid duplicate
-    //   const already = await paymentsCollection.findOne({ transactionId: paymentIntentId });
-    //   if (already) {
-    //     return res.send({ message: 'already exists', transactionId: paymentIntentId });
-    //   }
+        // B. Get Tutor ID (Check if it's in application, otherwise fetch via email)
+        let tutorId = application.tutorId; 
+        if (!tutorId) {
+            const tutorUser = await usersCollection.findOne({ email: application.tutorEmail });
+            tutorId = tutorUser ? tutorUser._id.toString() : null;
+        }
+        // ---------------------------------------------------------
 
-    //   if (session.payment_status === 'paid') {
-    //     // update application status -> approved
-    //     if (applicationId) {
-    //       await applicationsCollection.updateOne({ _id: new ObjectId(applicationId) }, { $set: { status: 'approved', approvedAt: new Date(), bookingId }});
-    //     }
-    //     // update tuition status -> booked (optional)
-    //     if (tuitionId) {
-    //       await tuitionsCollection.updateOne({ _id: new ObjectId(tuitionId) }, { $set: { status: 'booked', bookedAt: new Date(), bookingId }});
-    //     }
+        const amountInCents = Math.round(application.expectedSalary * 100);
 
-    //     // insert payment record
-    //     const payment = {
-    //       amount: session.amount_total / 100,
-    //       currency: session.currency,
-    //       studentEmail: session.customer_email,
-    //       tuitionId: tuitionId,
-    //       applicationId: applicationId,
-    //       transactionId: paymentIntentId,
-    //       paymentStatus: session.payment_status,
-    //       paidAt: new Date(),
-    //       bookingId
-    //     };
-    //     const resultPayment = await paymentsCollection.insertOne(payment);
-    //     await log('payment_success', { payment, sessionId });
+        const session = await stripe.checkout.sessions.create({
+            payment_method_types: ['card'],
+            line_items: [
+                {
+                    price_data: {
+                        currency: 'bdt',
+                        product_data: {
+                            name: `Tuition: ${tuition.subject}`,
+                            description: `Tutor: ${application.tutorName}`,
+                        },
+                        unit_amount: amountInCents,
+                    },
+                    quantity: 1,
+                },
+            ],
+            mode: 'payment',
+            // ⬇️ UPDATED METADATA ⬇️
+            metadata: {
+                applicationId: applicationId,
+                tuitionId: tuitionId,
+                studentEmail: req.decoded_email,
+                tutorEmail: application.tutorEmail,
+                studentId: studentId, // Added
+                tutorId: tutorId      // Added
+            },
+            success_url: `${process.env.CLIENT_URL}/dashboard/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+            cancel_url: `${process.env.CLIENT_URL}/dashboard/applied-tutors`,
+        });
 
-    //     return res.send({
-    //       success: true,
-    //       transactionId: paymentIntentId,
-    //       bookingId,
-    //       paymentInfo: resultPayment
-    //     });
-    //   }
+        res.send({ url: session.url });
 
-    //   return res.send({ success: false });
-    // });
+    } catch (error) {
+        console.error("Stripe Error:", error);
+        res.status(500).send({ message: 'Internal Server Error' });
+    }
+});
 
-    // // student can view their payments
-    // app.get('/payments', verifyFBToken, async (req, res) => {
-    //   const email = req.query.email;
-    //   if (!email) return res.status(400).send({ message: 'email required' });
-    //   if (email !== req.decoded_email) return res.status(403).send({ message: 'forbidden access' });
-    //   const payments = await paymentsCollection.find({ studentEmail: email }).sort({ paidAt: -1 }).toArray();
-    //   res.send(payments);
-    // });
+app.post('/payment-success', verifyFBToken, async (req, res) => {
+    try {
+        const { sessionId } = req.body;
+        if (!sessionId) return res.status(400).send({ message: 'Session ID required' });
 
-    // /* -------------------------
-    //    Applications status change (student approve/reject without payment, or admin override)
-    // -------------------------*/
-    // // Student can reject an application (set to rejected)
-    // app.patch('/applications/:id/reject', verifyFBToken, verifyStudent, async (req, res) => {
-    //   const id = req.params.id;
-    //   const application = await applicationsCollection.findOne({ _id: new ObjectId(id) });
-    //   if (!application) return res.status(404).send({ message: 'application not found' });
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    //   // ensure the student owns the tuition
-    //   const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(application.tuitionId) });
-    //   if (!tuition) return res.status(404).send({ message: 'tuition not found' });
-    //   if (tuition.studentEmail !== req.decoded_email) return res.status(403).send({ message: 'forbidden' });
+        if (session.payment_status === 'paid') {
+            // Extract IDs from metadata
+            const { applicationId, tuitionId, tutorEmail, tutorId, studentEmail } = session.metadata;
+            const transactionId = session.payment_intent;
 
-    //   const result = await applicationsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status: 'rejected', rejectedAt: new Date() }});
-    //   await log('application_rejected', { applicationId: id, by: req.decoded_email });
-    //   res.send(result);
-    // });
+            // 1. Idempotency Check (Prevent duplicate processing)
+            const query = { transactionId: transactionId };
+            const alreadyExists = await paymentsCollection.findOne(query);
+            if (alreadyExists) {
+                return res.send({ success: true, message: 'Already processed' });
+            }
 
-    // // Admin can override application status
-    // app.patch('/admin/applications/:id/status', verifyFBToken, verifyAdmin, async (req, res) => {
-    //   const id = req.params.id;
-    //   const { status } = req.body; // approved / rejected / pending
-    //   const result = await applicationsCollection.updateOne({ _id: new ObjectId(id) }, { $set: { status }});
-    //   await log('admin_application_status', { applicationId: id, status, by: req.decoded_email });
-    //   res.send(result);
-    // });
+            // 2. Save Payment Record
+            const paymentRecord = {
+                transactionId,
+                studentEmail,
+                tutorEmail,
+                applicationId,
+                tuitionId,
+                studentId: session.metadata.studentId,
+                tutorId,
+                amount: session.amount_total / 100,
+                currency: session.currency,
+                status: 'paid',
+                date: new Date()
+            };
+            await paymentsCollection.insertOne(paymentRecord);
 
-    // /* -------------------------
-    //    Tutor public/profile endpoints
-    // -------------------------*/
-    // // get tutors (basic)
-    // app.get('/tutors', async (req, res) => {
-    //   const { q, subject, page = 1, limit = 10 } = req.query;
-    //   const query = { role: 'tutor' }; // users collection stores tutor profiles
-    //   if (q) {
-    //     query.$or = [
-    //       { name: { $regex: q, $options: 'i' } },
-    //       { qualifications: { $regex: q, $options: 'i' } },
-    //     ];
-    //   }
-    //   if (subject) query.subjects = { $in: [subject] };
-    //   const skip = (parseInt(page) - 1) * parseInt(limit);
-    //   const tutors = await usersCollection.find(query).skip(skip).limit(parseInt(limit)).toArray();
-    //   res.send(tutors);
-    // });
+            // 3. Update Application Status -> Approved
+            await applicationsCollection.updateOne(
+                { _id: new ObjectId(applicationId) },
+                { $set: { status: 'Approved', transactionId: transactionId } }
+            );
 
-    // // tutor profile
-    // app.get('/tutors/:id', async (req, res) => {
-    //   const id = req.params.id;
-    //   const tutor = await usersCollection.findOne({ _id: new ObjectId(id), role: 'tutor' });
-    //   res.send(tutor);
-    // });
+            // 4. Update Tuition Job Status -> Booked
+            await tuitionsCollection.updateOne(
+                { _id: new ObjectId(tuitionId) },
+                { $set: { status: 'Booked' } }
+            );
 
-    // /* -------------------------
-    //    Admin reports
-    // -------------------------*/
-    // app.get('/admin/reports', verifyFBToken, verifyAdmin, async (req, res) => {
-    //   // simple summary: total users, total tuitions, total payments sum
-    //   const totalUsers = await usersCollection.countDocuments();
-    //   const totalTuitions = await tuitionsCollection.countDocuments();
-    //   const paymentsAgg = await paymentsCollection.aggregate([
-    //     { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } }
-    //   ]).toArray();
-    //   const totalPayments = paymentsAgg[0] || { total: 0, count: 0 };
-    //   res.send({ totalUsers, totalTuitions, totalPayments });
-    // });
+            // -------------------------------------------------
+            // 🆕 FIXED: Update Tutors Collection
+            // -------------------------------------------------
+            // We search by tuitionId AND tutorEmail because we don't have the 
+            // specific _id of the document in the tutorsCollection.
+            await tutorsCollection.updateOne(
+                { tuitionId: tuitionId, tutorEmail: tutorEmail }, 
+                { $set: { status: 'Approved', transactionId: transactionId } }
+            );
+            // -------------------------------------------------
 
-    // /* -------------------------
-    //    Utility / logs / health
-    // -------------------------*/
-    // app.get('/logs', verifyFBToken, verifyAdmin, async (req, res) => {
-    //   const logs = await logsCollection.find({}).sort({ createdAt: -1 }).limit(200).toArray();
-    //   res.send(logs);
-    // });
+            // 5. Reject other applications for this job
+            await applicationsCollection.updateMany(
+                { tuitionId: tuitionId, _id: { $ne: new ObjectId(applicationId) } },
+                { $set: { status: 'Rejected' } }
+            );
 
-    // server root
+            return res.send({ success: true, message: 'Payment Successful & Database Updated' });
+        }
+    } catch (error) {
+        console.error("Payment Success Error:", error);
+        res.status(500).send({ message: 'Server Error' });
+    }
+});
+
+// 3. Manual Reject (No Payment)
+app.patch('/applications/reject/:id', verifyFBToken, verifyStudent, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const result = await applicationsCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { status: 'Rejected' } }
+        );
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({ message: 'Error rejecting application' });
+    }
+});
+    
     app.get('/', (req, res) => {
       res.send('eTuitionBD API is running');
     });
