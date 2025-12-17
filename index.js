@@ -762,7 +762,31 @@ app.post('/payment-success', verifyFBToken, async (req, res) => {
         res.status(500).send({ message: 'Server Error' });
     }
 });
+app.get('/payments', verifyFBToken, async (req, res) => {
+    try {
+        const email = req.decoded_email; // Get email from the verified token
 
+        // Find payments where the user is EITHER the payer OR the receiver
+        const query = {
+            $or: [
+                { studentEmail: email }, // User is the Student
+                { tutorEmail: email }    // User is the Tutor
+            ]
+        };
+
+        // Fetch data and sort by newest date first
+        const result = await paymentsCollection
+            .find(query)
+            .sort({ date: -1 }) // -1 means descending order (newest first)
+            .toArray();
+
+        res.send(result);
+
+    } catch (error) {
+        console.error("Error fetching payment history:", error);
+        res.status(500).send({ message: "Error fetching payment history" });
+    }
+});
 // 3. Manual Reject (No Payment)
 app.patch('/applications/reject/:id', verifyFBToken, verifyStudent, async (req, res) => {
     try {
