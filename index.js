@@ -787,6 +787,31 @@ app.get('/payments', verifyFBToken, async (req, res) => {
         res.status(500).send({ message: "Error fetching payment history" });
     }
 });
+// GET: Fetch Ongoing Tuitions for a Tutor (Approved Applications)
+// GET: Specific route for "Ongoing" (Approved) Tuitions for a Tutor
+app.get('/applications/ongoing', verifyFBToken, verifyTutor, async (req, res) => {
+    try {
+        const email = req.query.tutorEmail;
+
+        // 1. Security Check: Ensure the token owner matches the email being requested
+        if (req.decoded_email !== email) {
+            return res.status(403).send({ message: 'Forbidden access' });
+        }
+
+        // 2. Query: Find applications for this tutor that are explicitly 'Approved'
+        const query = { 
+            tutorEmail: email, 
+            status: 'Approved' 
+        };
+
+        const result = await applicationsCollection.find(query).toArray();
+        res.send(result);
+
+    } catch (error) {
+        console.error("Error fetching ongoing applications:", error);
+        res.status(500).send({ message: "Server Error" });
+    }
+});
 // 3. Manual Reject (No Payment)
 app.patch('/applications/reject/:id', verifyFBToken, verifyStudent, async (req, res) => {
     try {
