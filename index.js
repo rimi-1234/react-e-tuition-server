@@ -413,34 +413,57 @@ async function run() {
     // GET /tutors?limit=4&sort=rating
 app.get('/tutors-post', async (req, res) => {
     try {
-        const { limit, sort } = req.query;
-
-        // 1. Basic Filter: Must be a tutor
-        const query = { };
-
-        // 2. Sorting Logic
-        let sortOptions = { createdAt: -1 }; // Default: Newest joined
-        
-        if (sort === 'rating') {
-            sortOptions = { rating: -1 }; // Highest rated first
-        } else if (sort === 'experience') {
-            sortOptions = { experience: -1 };
-        }
-
-        // 3. Limit Logic
+        const { limit, sort, subject } = req.query; // 👈 Get 'subject'
         const limitNum = parseInt(limit) || 0;
 
-        // 4. Fetch
-        const result = await usersCollection
-            .find(query)
-            .sort(sortOptions)
-            .limit(limitNum)
-            .toArray();
+        // 1. Build Query
+        const query = {};
+        if (subject) {
+            query.tuitionSubject = subject; // 👈 Filter by DB field name
+        }
+
+        // 2. Sorting Logic (Same as before)
+        let sortStage = { appliedDate: -1 };
+        if (sort === 'experience') sortStage = { experienceAsNumber: -1 };
+
+        const result = await tutorsCollection.aggregate([
+            { $match: query }, // 👈 Apply filter
+            {
+                $addFields: {
+                    experienceAsNumber: { $toInt: "$experience" } 
+                }
+            },
+            { $sort: sortStage },
+            { $limit: limitNum }
+        ]).toArray();
 
         res.send(result);
     } catch (error) {
-        console.error("Error fetching tutors:", error);
-        res.status(500).send({ message: "Internal Server Error" });
+        // ... error handling
+    }
+});
+app.get('/tutor-categories', async (req, res) => {
+    try {
+        // ❌ OLD: distinct() is not allowed in strict mode
+        // const categories = await tutorsCollection.distinct('tuitionSubject');
+
+        // ✅ NEW: Use aggregate() instead
+        const result = await tutorsCollection.aggregate([
+            {
+                $group: { _id: "$tuitionSubject" } // Group by subject to get unique values
+            },
+            {
+                $project: { _id: 0, subject: "$_id" } // Format the output
+            }
+        ]).toArray();
+
+        // Convert [{ subject: "Math" }, { subject: "English" }] -> ["Math", "English"]
+        const categories = result.map(item => item.subject).filter(Boolean);
+
+        res.send(categories);
+    } catch (error) {
+        console.error("Failed to fetch categories:", error);
+        res.status(500).send({ message: "Server Error", error: error.message });
     }
 });
     // GET: Fetch Latest 3 Tuition Posts
