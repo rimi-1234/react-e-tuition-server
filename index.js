@@ -200,52 +200,123 @@ async function run() {
     // GET: All Tutors (with search & filters)
 
     // GET All Tuitions (Supports Search, Filter, Sort)
-    app.get('/tuitions/status', async (req, res) => {
-      try {
-        const { search, status, filterClass, sort, page = 1, limit = 8 } = req.query;
 
-        // 1. Convert page/limit to numbers
-        const pageNumber = parseInt(page);
-        const limitNumber = parseInt(limit);
+
+// ✅ HELPER FUNCTION: Place this outside your route or in a utils file
+// This prevents the server from crashing if a user searches for symbols like "(", "+", or "*eturn text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+
+
+// ✅ HELPER FUNCTION: Place this outside your route or in a utils file
+// This prevents the server from crashing if a user searches for symbols like "(", "+", or "*"
+function escapeRegex(text) {
+    if (!text) return "";
+    return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+}
+
+// ✅ THE ROUTE
+app.get('/tuitions/status', async (req, res) => {
+    try {
+        const { 
+            search, 
+            status, 
+            filterClass, 
+            filterSubject, 
+            filterLocation, 
+            sort, 
+            page, 
+            limit 
+        } = req.query;
+        console.log(search, 
+            status, 
+            filterClass, 
+            filterSubject, 
+            filterLocation, 
+            sort, 
+            page);
+        
+        // 1. Safe Pagination Setup
+        // Default to page 1 and limit 10 if not provided
+        const pageNumber = Math.max(1, parseInt(page) || 1);
+        const limitNumber = Math.max(1, parseInt(limit) || 10);
         const skip = (pageNumber - 1) * limitNumber;
 
+        // 2. Build the Query Object
         let query = {};
 
-        // 2. Filters
-        if (status) query.status = status;
-        if (filterClass) query.class = { $regex: filterClass, $options: 'i' };
-        if (search) {
-          query.$or = [
-            { subject: { $regex: search, $options: 'i' } },
-            { location: { $regex: search, $options: 'i' } }
-          ];
+        // -- Exact Match for Status --
+        if (status) {
+            query.status = status;
         }
 
-        // 3. Sorting
-        let sortOptions = { _id: -1 };
-        if (sort === 'salary_asc') sortOptions = { budget: 1 };
-        else if (sort === 'salary_desc') sortOptions = { budget: -1 };
-        else if (sort === 'oldest') sortOptions = { _id: 1 };
+        // -- Specific Filters (Case-insensitive Regex) --
+        if (filterClass) {
+            query.class = { $regex: escapeRegex(filterClass), $options: 'i' };
+        }
+        if (filterSubject) {
+            query.subject = { $regex: escapeRegex(filterSubject), $options: 'i' };
+        }
+        if (filterLocation) {
+            query.location = { $regex: escapeRegex(filterLocation), $options: 'i' };
+        }
 
-        // 4. Fetch Data with Pagination
-        const tuitions = await tuitionsCollection
-          .find(query)
-          .sort(sortOptions)
-          .skip(skip)
-          .limit(limitNumber)
-          .toArray();
+        // -- Global Search Bar (Checks multiple fields) --
+        if (search) {
+            const searchRegex = { $regex: escapeRegex(search), $options: 'i' };
+            query.$or = [
+                { subject: searchRegex },
+                { location: searchRegex },
+                { class: searchRegex },
+                // Add 'title' here if your tuition object has a title
+                // { title: searchRegex } 
+            ];
+        }
 
-        // 5. Get Total Count (for calculating total pages on frontend)
-        const total = await tuitionsCollection.countDocuments(query);
+        // 3. Sorting Logic
+        let sortOptions = { _id: -1 }; // Default: Newest first
 
-        res.send({ tuitions, total });
+        switch (sort) {
+            case 'salary_asc':
+                sortOptions = { budget: 1 }; // Low to High
+                break;
+            case 'salary_desc':
+                sortOptions = { budget: -1 }; // High to Low
+                break;
+            case 'oldest':
+                sortOptions = { _id: 1 }; // Oldest first
+                break;
+            case 'newest':
+            default:
+                sortOptions = { _id: -1 }; // Newest first
+                break;
+        }
 
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ message: "Error fetching tuitions" });
-      }
-    });
+        // 4. Execute Queries in Parallel (Faster performance)
+        const [tuitions, total] = await Promise.all([
+            tuitionsCollection
+                .find(query)
+                .sort(sortOptions)
+                .skip(skip)
+                .limit(limitNumber)
+                .toArray(),
+            
+            // Get the count of documents that match the current filters
+            tuitionsCollection.countDocuments(query) 
+        ]);
 
+        // 5. Send Response
+        res.send({ 
+            tuitions, 
+            total 
+        });
+
+    } catch (error) {
+        console.error("Tuition API Error:", error);
+        res.status(500).send({ 
+            message: "Error fetching tuitions", 
+            error: error.message 
+        });
+    }
+});
     app.get('/tuitions/:id', async (req, res) => {
       try {
         const id = req.params.id;
@@ -505,7 +576,77 @@ app.get('/tutor-categories', async (req, res) => {
         res.status(500).send({ message: "Internal Server Error" });
     }
 });
+app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
+    try {
+        // 1. Calculate Total Revenue & Total Transactions
+        const revenueStats = await paymentsCollection.aggregate([
+            {
+                $group: {
+                    _id: null,
+                    totalRevenue: { $sum: "$amount" },
+                    totalTransactions: { $sum: 1 }
+                }
+            }
+        ]).toArray();
 
+        const totalRevenue = revenueStats.length > 0 ? revenueStats[0].totalRevenue : 0;
+        const totalTransactions = revenueStats.length > 0 ? revenueStats[0].totalTransactions : 0;
+
+        // 2. Prepare Chart Data (Revenue & Volume per Day)
+        const chartData = await paymentsCollection.aggregate([
+            {
+                $addFields: {
+                    dateObj: { $toDate: "$date" } // Convert string date to Date object
+                }
+            },
+            {
+                $group: {
+                    _id: { $dateToString: { format: "%Y-%m-%d", date: "$dateObj" } },
+                    dailyRevenue: { $sum: "$amount" },
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { _id: 1 } } // Sort by date ascending
+        ]).toArray();
+
+        // 3. User Demographics (MISSING IN YOUR CODE - ADDED HERE)
+        // This calculates how many Students, Tutors, and Admins you have
+        const userStats = await usersCollection.aggregate([
+            {
+                $group: {
+                    _id: "$role", // Group by role field
+                    count: { $sum: 1 }
+                }
+            }
+        ]).toArray();
+
+        // Transform the data to match Recharts format: [{ name: 'Student', value: 10 }, ...]
+        const userDemographics = userStats.map(stat => ({
+            name: stat._id ? (stat._id.charAt(0).toUpperCase() + stat._id.slice(1)) : 'Unknown',
+            value: stat.count
+        }));
+
+        // 4. Fetch Recent Transaction History
+        const recentTransactions = await paymentsCollection
+            .find()
+            .sort({ date: -1 })
+            .limit(100)
+            .toArray();
+
+        // Send EVERYTHING to the frontend
+        res.send({
+            totalRevenue,
+            totalTransactions,
+            chartData,
+            userDemographics, // <--- Now included
+            recentTransactions
+        });
+
+    } catch (error) {
+        console.error("Error fetching admin stats:", error);
+        res.status(500).send({ message: "Server Error" });
+    }
+});
     // GET: Fetch Latest 4 Tutors (assuming 'users' collection has role: 'tutor')
     app.get('/tutors/latest', async (req, res) => {
       const result = await usersCollection
