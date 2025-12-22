@@ -184,6 +184,19 @@ async function run() {
       }
     });
 
+    app.delete('/users/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+
+      // 1. Check if ID is valid
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: 'Invalid ID format' });
+      }
+
+      const query = { _id: new ObjectId(id) };
+      const result = await usersCollection.deleteOne(query);
+
+      res.send(result);
+    });
 
     // // create tuition - student only
     app.post('/tuitions', verifyFBToken, verifyStudent, async (req, res) => {
@@ -959,12 +972,14 @@ async function run() {
         res.status(500).send({ message: 'Internal Server Error', error: error.message });
       }
     });
+    // Add this inside your run() function or route definitions
+
 
     app.post('/payment-success', verifyFBToken, async (req, res) => {
       try {
         const { sessionId } = req.body;
         console.log(sessionId);
-        
+
         if (!sessionId) return res.status(400).send({ message: 'Session ID required' });
 
         const session = await stripe.checkout.sessions.retrieve(sessionId);
