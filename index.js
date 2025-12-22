@@ -20,10 +20,22 @@ admin.initializeApp({
 
 // Middleware
 app.use(express.json());
-app.use(cors({
-  origin: "http://localhost:5173",   // React origin
-  credentials: true                  // Allow cookies/token
-}));
+// const allowedOrigins = [
+//   "http://localhost:5173",
+//   "https://react-e-tution-session-client.vercel.app",
+// ];
+
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "https://react-e-tution-session-client.vercel.app",
+      "*"
+    ],
+    credentials: true,
+  }
+
+  ));
 
 console.log();
 const uri = `mongodb+srv://${process.env.MONGO_USER}:${process.env.MONGO_PASS}@cluster0.dw7x2dn.mongodb.net/?appName=Cluster0`;
@@ -202,38 +214,38 @@ async function run() {
     // GET All Tuitions (Supports Search, Filter, Sort)
 
 
-// ✅ HELPER FUNCTION: Place this outside your route or in a utils file
-// This prevents the server from crashing if a user searches for symbols like "(", "+", or "*eturn text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+    // ✅ HELPER FUNCTION: Place this outside your route or in a utils file
+    // This prevents the server from crashing if a user searches for symbols like "(", "+", or "*eturn text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
 
 
-// ✅ HELPER FUNCTION: Place this outside your route or in a utils file
-// This prevents the server from crashing if a user searches for symbols like "(", "+", or "*"
-function escapeRegex(text) {
-    if (!text) return "";
-    return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
-}
+    // ✅ HELPER FUNCTION: Place this outside your route or in a utils file
+    // This prevents the server from crashing if a user searches for symbols like "(", "+", or "*"
+    function escapeRegex(text) {
+      if (!text) return "";
+      return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+    }
 
-// ✅ THE ROUTE
-app.get('/tuitions/status', async (req, res) => {
-    try {
-        const { 
-            search, 
-            status, 
-            filterClass, 
-            filterSubject, 
-            filterLocation, 
-            sort, 
-            page, 
-            limit 
+    // ✅ THE ROUTE
+    app.get('/tuitions/status', async (req, res) => {
+      try {
+        const {
+          search,
+          status,
+          filterClass,
+          filterSubject,
+          filterLocation,
+          sort,
+          page,
+          limit
         } = req.query;
-        console.log(search, 
-            status, 
-            filterClass, 
-            filterSubject, 
-            filterLocation, 
-            sort, 
-            page);
-        
+        console.log(search,
+          status,
+          filterClass,
+          filterSubject,
+          filterLocation,
+          sort,
+          page);
+
         // 1. Safe Pagination Setup
         // Default to page 1 and limit 10 if not provided
         const pageNumber = Math.max(1, parseInt(page) || 1);
@@ -245,78 +257,78 @@ app.get('/tuitions/status', async (req, res) => {
 
         // -- Exact Match for Status --
         if (status) {
-            query.status = status;
+          query.status = status;
         }
 
         // -- Specific Filters (Case-insensitive Regex) --
         if (filterClass) {
-            query.class = { $regex: escapeRegex(filterClass), $options: 'i' };
+          query.class = { $regex: escapeRegex(filterClass), $options: 'i' };
         }
         if (filterSubject) {
-            query.subject = { $regex: escapeRegex(filterSubject), $options: 'i' };
+          query.subject = { $regex: escapeRegex(filterSubject), $options: 'i' };
         }
         if (filterLocation) {
-            query.location = { $regex: escapeRegex(filterLocation), $options: 'i' };
+          query.location = { $regex: escapeRegex(filterLocation), $options: 'i' };
         }
 
         // -- Global Search Bar (Checks multiple fields) --
         if (search) {
-            const searchRegex = { $regex: escapeRegex(search), $options: 'i' };
-            query.$or = [
-                { subject: searchRegex },
-                { location: searchRegex },
-                { class: searchRegex },
-                // Add 'title' here if your tuition object has a title
-                // { title: searchRegex } 
-            ];
+          const searchRegex = { $regex: escapeRegex(search), $options: 'i' };
+          query.$or = [
+            { subject: searchRegex },
+            { location: searchRegex },
+            { class: searchRegex },
+            // Add 'title' here if your tuition object has a title
+            // { title: searchRegex } 
+          ];
         }
 
         // 3. Sorting Logic
         let sortOptions = { _id: -1 }; // Default: Newest first
 
         switch (sort) {
-            case 'salary_asc':
-                sortOptions = { budget: 1 }; // Low to High
-                break;
-            case 'salary_desc':
-                sortOptions = { budget: -1 }; // High to Low
-                break;
-            case 'oldest':
-                sortOptions = { _id: 1 }; // Oldest first
-                break;
-            case 'newest':
-            default:
-                sortOptions = { _id: -1 }; // Newest first
-                break;
+          case 'salary_asc':
+            sortOptions = { budget: 1 }; // Low to High
+            break;
+          case 'salary_desc':
+            sortOptions = { budget: -1 }; // High to Low
+            break;
+          case 'oldest':
+            sortOptions = { _id: 1 }; // Oldest first
+            break;
+          case 'newest':
+          default:
+            sortOptions = { _id: -1 }; // Newest first
+            break;
         }
 
         // 4. Execute Queries in Parallel (Faster performance)
         const [tuitions, total] = await Promise.all([
-            tuitionsCollection
-                .find(query)
-                .sort(sortOptions)
-                .skip(skip)
-                .limit(limitNumber)
-                .toArray(),
-            
-            // Get the count of documents that match the current filters
-            tuitionsCollection.countDocuments(query) 
+          tuitionsCollection
+            .find(query)
+            .sort(sortOptions)
+            .skip(skip)
+            .limit(limitNumber)
+            .toArray(),
+
+          // Get the count of documents that match the current filters
+          tuitionsCollection.countDocuments(query)
         ]);
 
         // 5. Send Response
-        res.send({ 
-            tuitions, 
-            total 
+        res.send({
+          tuitions,
+          total
         });
 
-    } catch (error) {
+      } catch (error) {
         console.error("Tuition API Error:", error);
-        res.status(500).send({ 
-            message: "Error fetching tuitions", 
-            error: error.message 
+        res.status(500).send({
+          message: "Error fetching tuitions",
+          error: error.message
         });
-    }
-});
+      }
+    });
     app.get('/tuitions/:id', async (req, res) => {
       try {
         const id = req.params.id;
@@ -482,15 +494,15 @@ app.get('/tuitions/status', async (req, res) => {
       }
     });
     // GET /tutors?limit=4&sort=rating
-app.get('/tutors-post', async (req, res) => {
-    try {
+    app.get('/tutors-post', async (req, res) => {
+      try {
         const { limit, sort, subject } = req.query; // 👈 Get 'subject'
         const limitNum = parseInt(limit) || 0;
 
         // 1. Build Query
         const query = {};
         if (subject) {
-            query.tuitionSubject = subject; // 👈 Filter by DB field name
+          query.tuitionSubject = subject; // 👈 Filter by DB field name
         }
 
         // 2. Sorting Logic (Same as before)
@@ -498,64 +510,64 @@ app.get('/tutors-post', async (req, res) => {
         if (sort === 'experience') sortStage = { experienceAsNumber: -1 };
 
         const result = await tutorsCollection.aggregate([
-            { $match: query }, // 👈 Apply filter
-            {
-                $addFields: {
-                    experienceAsNumber: { $toInt: "$experience" } 
-                }
-            },
-            { $sort: sortStage },
-            { $limit: limitNum }
+          { $match: query }, // 👈 Apply filter
+          {
+            $addFields: {
+              experienceAsNumber: { $toInt: "$experience" }
+            }
+          },
+          { $sort: sortStage },
+          { $limit: limitNum }
         ]).toArray();
 
         res.send(result);
-    } catch (error) {
+      } catch (error) {
         // ... error handling
-    }
-});
-app.get('/tutor-categories', async (req, res) => {
-    try {
+      }
+    });
+    app.get('/tutor-categories', async (req, res) => {
+      try {
         // ❌ OLD: distinct() is not allowed in strict mode
         // const categories = await tutorsCollection.distinct('tuitionSubject');
 
         // ✅ NEW: Use aggregate() instead
         const result = await tutorsCollection.aggregate([
-            {
-                $group: { _id: "$tuitionSubject" } // Group by subject to get unique values
-            },
-            {
-                $project: { _id: 0, subject: "$_id" } // Format the output
-            }
+          {
+            $group: { _id: "$tuitionSubject" } // Group by subject to get unique values
+          },
+          {
+            $project: { _id: 0, subject: "$_id" } // Format the output
+          }
         ]).toArray();
 
         // Convert [{ subject: "Math" }, { subject: "English" }] -> ["Math", "English"]
         const categories = result.map(item => item.subject).filter(Boolean);
 
         res.send(categories);
-    } catch (error) {
+      } catch (error) {
         console.error("Failed to fetch categories:", error);
         res.status(500).send({ message: "Server Error", error: error.message });
-    }
-});
+      }
+    });
     // GET: Fetch Latest 3 Tuition Posts
- app.get('/tuition-posts', async (req, res) => {
-    try {
+    app.get('/tuition-posts', async (req, res) => {
+      try {
         const { limit, sort } = req.query;
 
         // 1. Initialize Query Options
         let query = {}; // Add filters here if needed (e.g., class, subject)
-        
+
         // 2. Handle Sorting
         let sortOptions = { postedDate: -1 }; // Default: Newest first
 
         if (sort === 'newest') {
-            sortOptions = { postedDate: -1 }; // Descending order
+          sortOptions = { postedDate: -1 }; // Descending order
         } else if (sort === 'oldest') {
-            sortOptions = { postedDate: 1 };  // Ascending order
+          sortOptions = { postedDate: 1 };  // Ascending order
         } else if (sort === 'budget_high') {
-            sortOptions = { budget: -1 };
+          sortOptions = { budget: -1 };
         } else if (sort === 'budget_low') {
-            sortOptions = { budget: 1 };
+          sortOptions = { budget: 1 };
         }
 
         // 3. Handle Limit
@@ -564,29 +576,29 @@ app.get('/tutor-categories', async (req, res) => {
 
         // 4. Execute Database Call
         const result = await tuitionsCollection
-            .find(query)
-            .sort(sortOptions)
-            .limit(limitNum)
-            .toArray();
+          .find(query)
+          .sort(sortOptions)
+          .limit(limitNum)
+          .toArray();
 
         res.send(result);
 
-    } catch (error) {
+      } catch (error) {
         console.error("Error fetching tuition posts:", error);
         res.status(500).send({ message: "Internal Server Error" });
-    }
-});
-app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
-    try {
+      }
+    });
+    app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
         // 1. Calculate Total Revenue & Total Transactions
         const revenueStats = await paymentsCollection.aggregate([
-            {
-                $group: {
-                    _id: null,
-                    totalRevenue: { $sum: "$amount" },
-                    totalTransactions: { $sum: 1 }
-                }
+          {
+            $group: {
+              _id: null,
+              totalRevenue: { $sum: "$amount" },
+              totalTransactions: { $sum: 1 }
             }
+          }
         ]).toArray();
 
         const totalRevenue = revenueStats.length > 0 ? revenueStats[0].totalRevenue : 0;
@@ -594,59 +606,59 @@ app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
 
         // 2. Prepare Chart Data (Revenue & Volume per Day)
         const chartData = await paymentsCollection.aggregate([
-            {
-                $addFields: {
-                    dateObj: { $toDate: "$date" } // Convert string date to Date object
-                }
-            },
-            {
-                $group: {
-                    _id: { $dateToString: { format: "%Y-%m-%d", date: "$dateObj" } },
-                    dailyRevenue: { $sum: "$amount" },
-                    count: { $sum: 1 }
-                }
-            },
-            { $sort: { _id: 1 } } // Sort by date ascending
+          {
+            $addFields: {
+              dateObj: { $toDate: "$date" } // Convert string date to Date object
+            }
+          },
+          {
+            $group: {
+              _id: { $dateToString: { format: "%Y-%m-%d", date: "$dateObj" } },
+              dailyRevenue: { $sum: "$amount" },
+              count: { $sum: 1 }
+            }
+          },
+          { $sort: { _id: 1 } } // Sort by date ascending
         ]).toArray();
 
         // 3. User Demographics (MISSING IN YOUR CODE - ADDED HERE)
         // This calculates how many Students, Tutors, and Admins you have
         const userStats = await usersCollection.aggregate([
-            {
-                $group: {
-                    _id: "$role", // Group by role field
-                    count: { $sum: 1 }
-                }
+          {
+            $group: {
+              _id: "$role", // Group by role field
+              count: { $sum: 1 }
             }
+          }
         ]).toArray();
 
         // Transform the data to match Recharts format: [{ name: 'Student', value: 10 }, ...]
         const userDemographics = userStats.map(stat => ({
-            name: stat._id ? (stat._id.charAt(0).toUpperCase() + stat._id.slice(1)) : 'Unknown',
-            value: stat.count
+          name: stat._id ? (stat._id.charAt(0).toUpperCase() + stat._id.slice(1)) : 'Unknown',
+          value: stat.count
         }));
 
         // 4. Fetch Recent Transaction History
         const recentTransactions = await paymentsCollection
-            .find()
-            .sort({ date: -1 })
-            .limit(100)
-            .toArray();
+          .find()
+          .sort({ date: -1 })
+          .limit(100)
+          .toArray();
 
         // Send EVERYTHING to the frontend
         res.send({
-            totalRevenue,
-            totalTransactions,
-            chartData,
-            userDemographics, // <--- Now included
-            recentTransactions
+          totalRevenue,
+          totalTransactions,
+          chartData,
+          userDemographics, // <--- Now included
+          recentTransactions
         });
 
-    } catch (error) {
+      } catch (error) {
         console.error("Error fetching admin stats:", error);
         res.status(500).send({ message: "Server Error" });
-    }
-});
+      }
+    });
     // GET: Fetch Latest 4 Tutors (assuming 'users' collection has role: 'tutor')
     app.get('/tutors/latest', async (req, res) => {
       const result = await usersCollection
@@ -715,13 +727,14 @@ app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       const item = req.body;
       const filter = { _id: new ObjectId(id) };
+      console.log(item);
 
       const updatedDoc = {
         $set: {
           subject: item.subject,
           class: item.class,
           location: item.location,
-          salary: item.salary,
+          budget: item.salary,
           description: item.description
           // We usually DO NOT update 'status' here (admins do that)
           // We usually DO NOT update 'studentEmail' (ownership shouldn't change)
@@ -863,7 +876,7 @@ app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
 
         // 1. Validate IDs
         if (!ObjectId.isValid(applicationId) || !ObjectId.isValid(tuitionId)) {
-          return res.status(400).send({ message: 'Invalid IDs' });
+          return res.status(400).send({ message: 'Invalid IDs provided' });
         }
 
         // 2. Fetch Application & Tuition
@@ -871,37 +884,46 @@ app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
         const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(tuitionId) });
 
         if (!application || !tuition) {
-          return res.status(404).send({ message: 'Not found' });
+          return res.status(404).send({ message: 'Application or Tuition not found' });
         }
 
-        // 3. Security Check
+        // 3. Security Check (Ensure logged-in student owns this tuition post)
         if (tuition.studentEmail !== req.decoded_email) {
-          return res.status(403).send({ message: 'Forbidden' });
+          return res.status(403).send({ message: 'Forbidden: You do not own this tuition post' });
         }
+
         if (application.status === 'Approved') {
-          return res.status(400).send({ message: 'Already booked' });
+          return res.status(400).send({ message: 'This application is already booked/approved' });
         }
 
+        // 4. Validate Amount (Stripe requires minimum ~60 BDT)
+        const amount = Number(application.expectedSalary);
+        if (!amount || amount < 60) {
+          return res.status(400).send({ message: 'Salary must be at least 60 BDT to process payment.' });
+        }
+        const amountInCents = Math.round(amount * 100);
+
         // ---------------------------------------------------------
-        // 🆕 NEW STEP: Get Student ID and Tutor ID for Metadata
+        // 5. Get Student ID and Tutor ID for Metadata (Safely)
         // ---------------------------------------------------------
 
-        // A. Get Student (Payer) ID from their email
+        // A. Get Student (Payer) ID
         const studentUser = await usersCollection.findOne({ email: req.decoded_email });
-        const studentId = studentUser ? studentUser._id.toString() : null;
+        // FIXED: Use "N/A" if null, because Stripe crashes on null metadata
+        const studentId = studentUser ? studentUser._id.toString() : "N/A";
 
-        // B. Get Tutor ID (Check if it's in application, otherwise fetch via email)
+        // B. Get Tutor ID
         let tutorId = application.tutorId;
         if (!tutorId) {
           const tutorUser = await usersCollection.findOne({ email: application.tutorEmail });
-          tutorId = tutorUser ? tutorUser._id.toString() : null;
+          tutorId = tutorUser ? tutorUser._id.toString() : "N/A";
         }
         // ---------------------------------------------------------
 
-        const amountInCents = Math.round(application.expectedSalary * 100);
-
+        // 6. Create Stripe Session
         const session = await stripe.checkout.sessions.create({
           payment_method_types: ['card'],
+          customer_email: req.decoded_email, // FIXED: Pre-fills user email in checkout
           line_items: [
             {
               price_data: {
@@ -916,15 +938,16 @@ app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
             },
           ],
           mode: 'payment',
-          // ⬇️ UPDATED METADATA ⬇️
+          // FIXED: All metadata values must be Strings. No nulls allowed.
           metadata: {
             applicationId: applicationId,
             tuitionId: tuitionId,
             studentEmail: req.decoded_email,
-            tutorEmail: application.tutorEmail,
-            studentId: studentId, // Added
-            tutorId: tutorId      // Added
+            tutorEmail: application.tutorEmail || "N/A",
+            studentId: studentId,
+            tutorId: tutorId
           },
+          // FIXED: Correct Stripe syntax (removed ${} and extra brackets)
           success_url: `${process.env.CLIENT_URL}/dashboard/payment/success?session_id={CHECKOUT_SESSION_ID}`,
           cancel_url: `${process.env.CLIENT_URL}/dashboard/applied-tutors`,
         });
@@ -933,13 +956,15 @@ app.get('/admin-stats', verifyFBToken, verifyAdmin, async (req, res) => {
 
       } catch (error) {
         console.error("Stripe Error:", error);
-        res.status(500).send({ message: 'Internal Server Error' });
+        res.status(500).send({ message: 'Internal Server Error', error: error.message });
       }
     });
 
     app.post('/payment-success', verifyFBToken, async (req, res) => {
       try {
         const { sessionId } = req.body;
+        console.log(sessionId);
+        
         if (!sessionId) return res.status(400).send({ message: 'Session ID required' });
 
         const session = await stripe.checkout.sessions.retrieve(sessionId);

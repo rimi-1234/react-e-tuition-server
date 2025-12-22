@@ -1,3 +1,5 @@
 .env
 serviceKeyConverter.json
 node_modules
+.vercel
+.env*.local
