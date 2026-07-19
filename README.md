@@ -2,7 +2,7 @@
 
 The **React E-Tuition Backend** is a secure RESTful API built with **Node.js**, **Express.js**, and **MongoDB**. It powers the React E-Tuition Platform by managing authentication, tuition posts, tutor applications, payments, and user roles. The backend also integrates **Firebase Admin**, **JWT**, and **Stripe** to provide secure authentication and payment processing.
 
-🌐 **Live API:** https://react-e-tution-session-sever.vercel.app/
+🌐 **Live API:** [(https://react-e-tution-session-sever.vercel.app/)]
 
 ---
 
