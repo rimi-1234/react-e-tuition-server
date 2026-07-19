@@ -7,8 +7,7 @@ The **React E-Tuition Backend** is a secure RESTful API built with **Node.js**, 
 ---
 
 # 📸 Preview
-
-![Backend Preview](./preview.png)
+![E-Tuition Server Preview](https://raw.githubusercontent.com/rimi-1234/react-e-tuition-server/main/623681359-6f64352b-de43-45ed-8680-7f3ed4698787.png)
 
 ---
 
