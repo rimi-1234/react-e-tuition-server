@@ -1,99 +1,317 @@
-# 🎓 React E-Tuition Platform
+# 🎓 React E-Tuition Platform - Backend API
 
-A full-stack MERN application designed to streamline the connection between students and tutors. This platform allows students to post tuition needs, tutors to apply for jobs, and facilitates secure payment processing for tuition bookings via Stripe.
+The **React E-Tuition Backend** is a secure RESTful API built with **Node.js**, **Express.js**, and **MongoDB**. It powers the React E-Tuition Platform by managing authentication, tuition posts, tutor applications, payments, and user roles. The backend also integrates **Firebase Admin**, **JWT**, and **Stripe** to provide secure authentication and payment processing.
 
-### 🔗 Live Links
-
-| Component | Status | URL |
-| :--- | :--- | :--- |
-| **Frontend (Client)** | 🟢 Live | **[https://react-e-tution-session-client.vercel.app](https://react-e-tution-session-client.vercel.app/)** |
-| **Backend (Server)** | 🟢 Live | **[https://react-e-tution-session-sever.vercel.app](https://react-e-tution-session-sever.vercel.app/)** |
+🌐 **Live API:** https://react-e-tution-session-sever.vercel.app/
 
 ---
 
-## 🎯 Purpose
+# 📸 Preview
 
-The **React E-Tuition Platform** was built to solve the inefficiency of finding reliable academic tutors. In many areas, the process is manual and disorganized. This platform solves that by providing:
-
-1.  **Trust & Verification:** A centralized marketplace where verified tutors can find work.
-2.  **Secure Transactions:** Eliminates payment risks by integrating **Stripe** for secure booking fees.
-3.  **Role-Based Access:** Distinct, optimized workflows for Students (hiring), Tutors (applying), and Admins (managing).
+![Backend Preview](./preview.png)
 
 ---
 
-## ✨ Key Features
+# ✨ Features
 
-* **🔐 Authentication:** Secure login & registration using **Firebase** (Google & Email/Password).
-* **🛡️ Role-Based Access Control (RBAC):**
-    * **Students:** Post tuition jobs, manage applications, book tutors.
-    * **Tutors:** Browse jobs, filter by subject/class, apply for positions.
-    * **Admins:** Manage users, verify tutors, oversee platform activity.
-* **💳 Secure Payments:** Integrated **Stripe Payment Gateway** (supports BDT currency) for booking confirmations.
-* **📄 Tuition Management:** Full CRUD (Create, Read, Update, Delete) capabilities for tuition posts.
-* **⚡ Real-time Data:** Powered by **TanStack Query** for efficient data fetching and caching.
-
----
-
-## 📦 Packages Used
-
-### **💻 Client-Side (Frontend)**
-* **Framework:** `react`, `react-router-dom` (Vite)
-* **Styling:** `tailwindcss`, `daisyui`
-* **State & API:** `@tanstack/react-query`, `axios`
-* **Authentication:** `firebase`
-* **Payment:** `@stripe/react-stripe-js`, `@stripe/stripe-js`
-* **UI Components:** `sweetalert2`, `react-hot-toast`, `react-icons`
-
-### **⚙️ Server-Side (Backend)**
-* **Runtime:** `node`, `express`
-* **Database:** `mongodb` (Native Driver)
-* **Authentication:** `firebase-admin`
-* **Security:** `cors`, `dotenv`, `jsonwebtoken` (JWT)
-* **Payment:** `stripe` (Backend SDK)
-* **Development:** `nodemon`
+- 🔐 Firebase Admin Authentication
+- 🛡️ JWT-Based Route Protection
+- 👥 Role-Based Access Control (Student, Tutor & Admin)
+- 📚 Tuition Post CRUD Operations
+- 📝 Tutor Application Management
+- 💳 Stripe Payment Integration
+- 👤 User Management APIs
+- 🔍 Search & Filter Support
+- 🗄️ MongoDB Database Integration
+- ⚡ RESTful API with Express.js
+- 🌍 CORS Enabled
+- 🔒 Secure Environment Variables
 
 ---
 
-## 🚀 Run Locally
+# 🛠️ Tech Stack
 
-Follow these steps to run the project on your local machine.
+## Backend
 
-### 1. Clone the Repository
+- Node.js
+- Express.js
+
+## Database
+
+- MongoDB (Native Driver)
+
+## Authentication
+
+- Firebase Admin SDK
+- JSON Web Token (JWT)
+
+## Payment
+
+- Stripe
+
+## Deployment
+
+- Vercel
+
+---
+
+# 📦 Backend Dependencies
+
+```json
+{
+  "express": "^4.x",
+  "mongodb": "^6.x",
+  "firebase-admin": "^12.x",
+  "jsonwebtoken": "^9.x",
+  "stripe": "^17.x",
+  "cors": "^2.x",
+  "dotenv": "^16.x",
+  "nodemon": "^3.x"
+}
+```
+
+---
+
+# 📂 Project Structure
+
+```text
+react-e-tuition-server/
+│
+├── routes/
+├── middleware/
+├── utils/
+├── .env
+├── index.js
+├── package.json
+└── README.md
+```
+
+---
+
+# ⚙️ Local Installation & Setup
+
+## Prerequisites
+
+- Node.js (v18 or later)
+- npm
+- Git
+- MongoDB Atlas Account
+- Firebase Project
+- Stripe Account
+
+---
+
+## 1️⃣ Clone the Repository
+
 ```bash
-git clone [https://github.com/rimi-1234/react-e-tuition-client.git](https://github.com/rimi-1234/react-e-tuition-client.git)
-2. Backend Setup
-Navigate to the server folder and install dependencies:
+git clone https://github.com/rimi-1234/react-e-tuition-server.git
+```
 
-Bash
+Move into the project directory:
 
-cd backend
+```bash
+cd react-e-tuition-server
+```
+
+---
+
+## 2️⃣ Install Dependencies
+
+```bash
 npm install
-Create a .env file in the backend folder with your credentials:
+```
 
-Code snippet
+---
 
+## 3️⃣ Configure Environment Variables
+
+Create a file named:
+
+```text
+.env
+```
+
+Add the following:
+
+```env
 PORT=5000
+
 DB_USER=your_mongodb_username
+
 DB_PASS=your_mongodb_password
+
 ACCESS_TOKEN_SECRET=your_jwt_secret
+
 STRIPE_SECRET_KEY=your_stripe_secret_key
+
 CLIENT_URL=http://localhost:5173
-Start the server:
 
-Bash
+FIREBASE_PROJECT_ID=your_project_id
 
+FIREBASE_CLIENT_EMAIL=your_client_email
+
+FIREBASE_PRIVATE_KEY=your_private_key
+```
+
+---
+
+## 4️⃣ Start the Development Server
+
+```bash
+npm run dev
+```
+
+or
+
+```bash
 npm start
-3. Frontend Setup
-Navigate to the client folder and install dependencies:
+```
 
-Bash
+The backend will run at:
 
-cd client
+```text
+http://localhost:5000
+```
+
+---
+
+# 📜 Available Scripts
+
+```bash
 npm install
-Create a .env.local file in the client folder:
+```
 
-Code snippet
+Install project dependencies.
 
-VITE_apiKey=your_firebase_api_key
-VITE_authDomain=your_firebase_auth_domain
-VITE_projectId=your_firebase_project_id
+```bash
+npm run dev
+```
+
+Run the backend with Nodemon.
+
+```bash
+npm start
+```
+
+Start the production server.
+
+---
+
+# 🌐 API Endpoints
+
+| Method | Endpoint | Description |
+|---------|----------|-------------|
+| GET | `/tuition` | Get all tuition posts |
+| GET | `/tuition/:id` | Get a single tuition post |
+| POST | `/tuition` | Create a tuition post |
+| PATCH | `/tuition/:id` | Update a tuition post |
+| DELETE | `/tuition/:id` | Delete a tuition post |
+| GET | `/applications` | Get tutor applications |
+| POST | `/applications` | Apply for a tuition |
+| GET | `/users` | Get all users |
+| PATCH | `/users/:id` | Update user role |
+| POST | `/jwt` | Generate JWT Token |
+| POST | `/create-payment-intent` | Create Stripe Payment Intent |
+
+---
+
+# 🔐 Authentication
+
+Authentication is implemented using:
+
+- Firebase Admin SDK
+- JWT (JSON Web Token)
+- Protected API Routes
+- Role-Based Authorization
+
+---
+
+# 💳 Payment Integration
+
+Stripe is used for secure online payments.
+
+Features include:
+
+- Secure Payment Intent
+- Booking Confirmation
+- BDT Currency Support
+- Payment Verification
+
+---
+
+# 🗄️ Database
+
+MongoDB stores:
+
+- Users
+- Tutors
+- Students
+- Tuition Posts
+- Applications
+- Payments
+
+---
+
+# 🚀 Deployment
+
+The backend is deployed on **Vercel**.
+
+### Install Dependencies
+
+```bash
+npm install
+```
+
+### Start Server
+
+```bash
+npm start
+```
+
+Configure all required environment variables in your Vercel project before deployment.
+
+---
+
+# 🤝 Contributing
+
+1. Fork the repository.
+
+2. Create a feature branch.
+
+```bash
+git checkout -b feature-name
+```
+
+3. Commit your changes.
+
+```bash
+git commit -m "Added new feature"
+```
+
+4. Push the branch.
+
+```bash
+git push origin feature-name
+```
+
+5. Open a Pull Request.
+
+---
+
+# 📄 License
+
+This project is licensed under the MIT License.
+
+---
+
+# 👨‍💻 Author
+
+**Rimi**
+
+GitHub: https://github.com/rimi-1234
+
+---
+
+# 🌐 Live API
+
+https://react-e-tution-session-sever.vercel.app/
