@@ -1,43 +1,71 @@
 // server.js (eTuitionBD)
+// Node.js on Windows sometimes fails to resolve MongoDB Atlas SRV records via
+// the system DNS resolver. Force c-ares to use Google DNS so SRV lookups work.
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
+
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const crypto = require('crypto');
 const admin = require('firebase-admin');
-const { log } = require('console');
 
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Decode and init Firebase Admin (FB_SERVICE_KEY must be base64 JSON)
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY || '', 'base64').toString('utf8');
-const serviceAccount = JSON.parse(decoded);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? require('stripe')(process.env.STRIPE_SECRET_KEY)
+  : null;
 
-// Middleware
+function initFirebaseAdmin() {
+  if (admin.apps.length) return;
+  const raw = process.env.FB_SERVICE_KEY;
+  if (!raw) {
+    console.warn('FB_SERVICE_KEY is not set. Protected routes will reject requests until it is configured.');
+    return;
+  }
+  try {
+    const json = raw.trim().startsWith('{')
+      ? raw
+      : Buffer.from(raw, 'base64').toString('utf8');
+    const serviceAccount = JSON.parse(json);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+  } catch (error) {
+    console.error('Failed to initialize Firebase Admin:', error.message);
+  }
+}
+
+initFirebaseAdmin();
+
 app.use(express.json());
-// const allowedOrigins = [
-//   "http://localhost:5173",
-//   "https://react-e-tution-session-client.vercel.app",
-// ];
+
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'https://react-e-tution-session-client.vercel.app',
+  process.env.CLIENT_URL,
+].filter(Boolean);
 
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://react-e-tution-session-client.vercel.app",
-      "*"
-    ],
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
     credentials: true,
-  }
+  })
+);
 
-  ));
+app.get('/health', (_req, res) => {
+  res.send({ ok: true, service: 'eTuitionBD API' });
+});
 
-console.log();
 const uri = `mongodb+srv://${process.env.MONGO_USER}:${process.env.MONGO_PASS}@cluster0.dw7x2dn.mongodb.net/?appName=Cluster0`;
 // MongoDB connection
 
@@ -63,6 +91,7 @@ const verifyFBToken = async (req, res, next) => {
 
 
   if (!authHeader) return res.status(401).send({ message: 'unauthorized access' });
+  if (!admin.apps.length) return res.status(503).send({ message: 'Auth service is not configured' });
   try {
     const idToken = authHeader.split(' ')[1];
 
@@ -85,8 +114,17 @@ async function run() {
     const applicationsCollection = db.collection('applications');
     const tutorsCollection = db.collection('tutors');
     const paymentsCollection = db.collection('payments');
-    // // optional: logs collection
-    // const logsCollection = db.collection('logs');
+    const notificationsCollection = db.collection('notifications');
+    const bookmarksCollection = db.collection('bookmarks');
+    const reviewsCollection = db.collection('reviews');
+    const withdrawalsCollection = db.collection('withdrawals');
+
+    // ─── Platform business model ───────────────────────────────────────────
+    // The platform keeps PLATFORM_FEE_PERCENT % of every payment as its
+    // commission.  The tutor receives the remaining netAmount.
+    // Both figures are stored on every payment document so any query can
+    // compute revenue without re-deriving it.
+    const PLATFORM_FEE_PERCENT = 10;
 
     // Role check middleware (requires verifyFBToken first)
     const verifyAdmin = async (req, res, next) => {
@@ -98,12 +136,12 @@ async function run() {
 
     const verifyStudent = async (req, res, next) => {
       const email = req.decoded_email;
-      console.log();
-
-      const user = await usersCollection.findOne({ email });
-      console.log(user);
-
-      if (!user || user.role !== 'Student') return res.status(403).send({ message: 'forbidden access' });
+      const user  = await usersCollection.findOne({ email });
+      // Use the same default as the role API: treat a missing/null role as 'Student'
+      const role = user?.role || 'Student';
+      if (!user || role !== 'Student') {
+        return res.status(403).send({ message: 'Forbidden: Students only' });
+      }
       req.user = user;
       next();
     };
@@ -114,6 +152,22 @@ async function run() {
       if (!user || user.role !== 'Tutor') return res.status(403).send({ message: 'forbidden access' });
       req.user = user;
       next();
+    };
+
+    // Helper: create a notification for a user
+    const createNotification = async (recipientEmail, type, message, link = null) => {
+      try {
+        await notificationsCollection.insertOne({
+          recipientEmail,
+          type,        // e.g. 'new_application', 'payment_confirmed', 'tuition_approved'
+          message,
+          link,
+          read: false,
+          createdAt: new Date()
+        });
+      } catch (err) {
+        console.error('Failed to create notification:', err.message);
+      }
     };
 
     // Logging helper
@@ -138,49 +192,64 @@ async function run() {
       res.send(users);
     });
 
-    // get role by email (public)
-    // app.get('/users/:email/role', async (req, res) => {
-    //   const email = req.params.email;
-    //   const user = await usersCollection.findOne({ email });
-    //   res.send({ role: user?.role || 'user' });
-    // });
+    // GET /users/:email/role — returns the role for the authenticated user.
+    // Protected: the caller must send their Firebase ID token; the email in
+    // the URL must match the email inside the verified token (prevents IDOR).
+    app.get('/users/:email/role', verifyFBToken, async (req, res) => {
+      try {
+        const emailParam = req.params.email;
+
+        // Security: token email must match the requested email
+        if (emailParam !== req.decoded_email) {
+          return res.status(403).send({ message: 'Forbidden' });
+        }
+
+        const user = await usersCollection.findOne({ email: emailParam });
+        if (!user) return res.status(404).send({ message: 'User not found' });
+
+        res.send({ role: user.role || 'Student' });
+      } catch (err) {
+        res.status(500).send({ message: err.message });
+      }
+    });
 
     // create or upsert user (called from frontend after firebase login)
 
     app.post("/users", async (req, res) => {
       try {
         const { email, displayName, photoURL, role, phone } = req.body;
-        console.log(email, displayName, photoURL, role, phone);
-        console.log(role);
 
+        if (!email) return res.status(400).json({ message: 'Email is required' });
 
-        // Check if email already exists
-        const existingUser = await usersCollection.findOne({ email });
-        if (existingUser) {
-          return res.status(400).json({ message: "Email already registered" });
+        // Upsert: if the user already exists, update display fields but
+        // NEVER overwrite their existing role (protects against role downgrade).
+        // If they are new, set role to the provided value or default 'Student'.
+        const existing = await usersCollection.findOne({ email });
+
+        if (existing) {
+          // Update profile info; also set role if it's missing (migration fix)
+          const updateFields = { displayName, photoURL, updatedAt: new Date() };
+          if (!existing.role) updateFields.role = role || 'Student';
+          await usersCollection.updateOne({ email }, { $set: updateFields });
+          return res.status(200).json({ message: 'User updated', userId: existing._id });
         }
 
-        // Set default role to "Student" if not provided
-        const userRole = role || "Student";
-
-        // Create new user object with creation date
+        // New user — create with default role
         const newUser = {
           email,
           displayName,
-          photoURL,
-          role: userRole,
-          phone,
+          photoURL:  photoURL  || '',
+          role:      role      || 'Student',
+          phone:     phone     || '',
           createdAt: new Date()
         };
 
         const result = await usersCollection.insertOne(newUser);
-
-        // Respond with success
         return res.status(201).json({ message: 'User created', userId: result.insertedId });
 
       } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error('POST /users error:', error);
+        res.status(500).json({ message: 'Server error', error: error.message });
       }
     });
 
@@ -200,14 +269,23 @@ async function run() {
 
     // // create tuition - student only
     app.post('/tuitions', verifyFBToken, verifyStudent, async (req, res) => {
-      const tuition = req.body;
-      tuition.studentEmail = req.decoded_email;
-      tuition.studentId = req.user?._id || null;
-      tuition.status = 'pending'; // pending admin approval
-      tuition.createdAt = new Date();
-      const result = await tuitionsCollection.insertOne(tuition);
-      await log('tuition_created', { tuitionId: result.insertedId, by: tuition.studentEmail });
-      res.send(result);
+      try {
+        const tuition = req.body;
+
+        // Always set server-side fields — never trust the client for these
+        tuition.studentEmail = req.decoded_email;
+        tuition.status      = 'Pending'; // capital P — consistent with admin stats queries
+        tuition.createdAt   = new Date();
+        // NOTE: log() was called here but the function was never defined (commented out
+        // on line ~169), causing "ReferenceError: log is not defined" on every submit.
+        // The call has been removed.
+
+        const result = await tuitionsCollection.insertOne(tuition);
+        res.send(result);
+      } catch (error) {
+        console.error('POST /tuitions error:', error);
+        res.status(500).send({ message: error.message });
+      }
     });
     // Get tuitions. If query `?studentEmail=` is present, filter by it.
     app.get('/tuitions', verifyFBToken, async (req, res) => {
@@ -251,14 +329,6 @@ async function run() {
           page,
           limit
         } = req.query;
-        console.log(search,
-          status,
-          filterClass,
-          filterSubject,
-          filterLocation,
-          sort,
-          page);
-
         // 1. Safe Pagination Setup
         // Default to page 1 and limit 10 if not provided
         const pageNumber = Math.max(1, parseInt(page) || 1);
@@ -368,42 +438,61 @@ async function run() {
 
 
     // POST: Create a new application
-    app.post('/applications', async (req, res) => {
+    // NOTE: recruiterEmail, tuitionSubject and tuitionLocation are fetched from
+    // the tuitions collection server-side.  The client only needs to send
+    // tuitionId, tutorEmail, qualifications, experience, expectedSalary.
+    app.post('/applications', verifyFBToken, async (req, res) => {
       try {
         const applicationData = req.body;
+        const tutorEmail = req.decoded_email; // always use the verified token
 
         // 1. Check for duplicate application
-        const query = {
+        const existingApplication = await applicationsCollection.findOne({
           tuitionId: applicationData.tuitionId,
-          tutorEmail: applicationData.tutorEmail
-        };
-        const existingApplication = await applicationsCollection.findOne(query);
+          tutorEmail: tutorEmail
+        });
 
         if (existingApplication) {
           return res.status(400).send({ message: "You have already applied to this tuition!" });
         }
 
-        // 2. Verify Tutor exists in DB
-        const tutorProfile = await usersCollection.findOne({ email: applicationData.tutorEmail });
-
-        if (!tutorProfile) {
-          return res.status(404).send({ message: "User profile not found." });
+        // 2. Fetch tuition so we can get recruiterEmail, subject, location
+        //    server-side — never trust the client for these fields.
+        if (!ObjectId.isValid(applicationData.tuitionId)) {
+          return res.status(400).send({ message: 'Invalid tuition ID' });
+        }
+        const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(applicationData.tuitionId) });
+        if (!tuition) {
+          return res.status(404).send({ message: 'Tuition not found' });
         }
 
-        // 3. Construct Final Application
+        // Prevent tutors from applying to their own tuitions (edge case)
+        if (tuition.studentEmail === tutorEmail) {
+          return res.status(400).send({ message: "You cannot apply to your own tuition post." });
+        }
+
+        // 3. Fetch tutor profile for display fields
+        const tutorProfile = await usersCollection.findOne({ email: tutorEmail });
+        if (!tutorProfile) {
+          return res.status(404).send({ message: "Your user profile was not found." });
+        }
+
+        // 4. Construct the application — all sensitive fields come from the DB
         const newApplication = {
-          tuitionId: applicationData.tuitionId,
-          tuitionSubject: applicationData.tuitionSubject,
-          tuitionLocation: applicationData.tuitionLocation,
-          recruiterEmail: applicationData.recruiterEmail,
-          tutorEmail: tutorProfile.email,
-          tutorName: tutorProfile.displayName,
-          tutorImage: tutorProfile.photoURL,
-          qualifications: applicationData.qualifications || tutorProfile.qualifications || "N/A",
-          experience: applicationData.experience || tutorProfile.experience || "N/A",
-          expectedSalary: applicationData.expectedSalary || tutorProfile.expectedSalary || "Negotiable",
-          status: 'Pending',
-          appliedDate: new Date()
+          tuitionId:       applicationData.tuitionId,
+          tuitionTitle:    tuition.title    || tuition.subject,
+          tuitionSubject:  tuition.subject,
+          tuitionLocation: tuition.location,
+          recruiterEmail:  tuition.studentEmail,   // ← from DB, not client
+          tutorEmail:      tutorProfile.email,
+          tutorId:         tutorProfile._id.toString(),
+          tutorName:       tutorProfile.displayName || tutorProfile.name,
+          tutorImage:      tutorProfile.photoURL    || null,
+          qualifications:  applicationData.qualifications  || tutorProfile.qualifications  || 'N/A',
+          experience:      applicationData.experience      || tutorProfile.experience      || 'N/A',
+          expectedSalary:  applicationData.expectedSalary  || tutorProfile.expectedSalary  || 0,
+          status:          'Pending',
+          appliedDate:     new Date()
         };
 
         // --- 4. INSERT INTO BOTH COLLECTIONS ---
@@ -418,8 +507,18 @@ async function run() {
 
         // 5. Send Response
         // We send both results back so the frontend checks if 'acknowledged' is true
+        // Notify the student (recruiter) that a tutor has applied
+        if (applicationData.recruiterEmail) {
+          await createNotification(
+            applicationData.recruiterEmail,
+            'new_application',
+            `${newApplication.tutorName} applied for your ${newApplication.tuitionSubject} tuition.`,
+            '/dashboard/applied-tutors'
+          );
+        }
+
         res.send({
-          insertedId: appResult.insertedId, // Frontend usually looks for this
+          insertedId: appResult.insertedId,
           appResult,
           tutorResult
         });
@@ -435,8 +534,6 @@ async function run() {
       try {
         const { search, subject, location, page = 1, limit = 8 } = req.query;
 
-        console.log("--- New Request to /users/tutors ---");
-        console.log("Filters received:", { search, subject, location });
 
         // 1. Build Query
         const query = {};
@@ -469,8 +566,6 @@ async function run() {
           .limit(limitNumber)
           .toArray();
 
-        // DEBUG: See if data was found
-        console.log(`Found ${rawTutors.length} tutors in DB`);
         if (rawTutors.length === 0) {
 
         }
@@ -684,23 +779,17 @@ async function run() {
     // GET: Fetch Applications Received by a Student (Recruiter)
     app.get('/applications/received', verifyFBToken, verifyStudent, async (req, res) => {
       try {
-        const email = req.query.email;
-        console.log(email, req.user.email);
+        // The token was already verified by verifyFBToken; the decoded email is on
+        // req.decoded_email.  We ignore the ?email= query param entirely and use
+        // the trusted value from the token — this also plugs the IDOR vulnerability
+        // that existed when the old code compared req.user.email (undefined) with
+        // the query param (attacker-controlled).
+        const email = req.decoded_email;
 
-
-        // Security Check
-        if (req.user.email !== email) {
-          return res.status(403).send({ message: 'Forbidden access' });
-        }
-
-        // Find applications where the logged-in user is the recruiter
-        const query = { recruiterEmail: email };
-        console.log(query);
-
-
-        const result = await applicationsCollection.find(query).toArray();
-        console.log(result);
-
+        const result = await applicationsCollection
+          .find({ recruiterEmail: email })
+          .sort({ appliedDate: -1 })
+          .toArray();
 
         res.send(result);
       } catch (error) {
@@ -732,7 +821,6 @@ async function run() {
       if (!tuition) return res.status(404).send({ message: 'tuition not found' });
       if (tuition.studentEmail !== req.decoded_email) return res.status(403).send({ message: 'forbidden' });
       const result = await tuitionsCollection.deleteOne({ _id: new ObjectId(id) });
-      await log('tuition_deleted', { tuitionId: id, by: req.decoded_email });
       res.send(result);
     });
     // Update Tuition Endpoint
@@ -740,7 +828,6 @@ async function run() {
       const id = req.params.id;
       const item = req.body;
       const filter = { _id: new ObjectId(id) };
-      console.log(item);
 
       const updatedDoc = {
         $set: {
@@ -826,19 +913,10 @@ async function run() {
 
     app.get('/applications/my-applications', verifyFBToken, verifyTutor, async (req, res) => {
       try {
-        const email = req.query.email;
-        console.log(email);
-
-        console.log(req.user.email, email);
-
-        // Security: Ensure token matches email
-        if (req.user.email !== email) {
-          return res.status(403).send({ message: 'Forbidden access' });
-        }
-
+        // Always use the email from the verified token — ignore the ?email= query param
+        const email = req.decoded_email;
         const query = { tutorEmail: email };
         const result = await applicationsCollection.find(query).toArray();
-        console.log(result);
 
         res.send(result);
       } catch (error) {
@@ -881,7 +959,6 @@ async function run() {
         res.status(500).send({ message: error.message });
       }
     });
-    console.log(process.env.CLIENT_URL);
 
     app.post('/create-checkout-session', verifyFBToken, verifyStudent, async (req, res) => {
       try {
@@ -933,6 +1010,10 @@ async function run() {
         }
         // ---------------------------------------------------------
 
+        if (!stripe) {
+          return res.status(503).send({ message: 'Payments are not configured' });
+        }
+
         // 6. Create Stripe Session
         const session = await stripe.checkout.sessions.create({
           payment_method_types: ['card'],
@@ -978,9 +1059,9 @@ async function run() {
     app.post('/payment-success', verifyFBToken, async (req, res) => {
       try {
         const { sessionId } = req.body;
-        console.log(sessionId);
 
         if (!sessionId) return res.status(400).send({ message: 'Session ID required' });
+        if (!stripe) return res.status(503).send({ message: 'Payments are not configured' });
 
         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
@@ -996,7 +1077,11 @@ async function run() {
             return res.send({ success: true, message: 'Already processed' });
           }
 
-          // 2. Save Payment Record
+          // 2. Save Payment Record (with platform fee breakdown)
+          const grossAmount   = session.amount_total / 100;             // what student paid
+          const platformFee   = Math.round(grossAmount * PLATFORM_FEE_PERCENT) / 100; // 10%
+          const netAmount     = parseFloat((grossAmount - platformFee).toFixed(2));   // tutor earns
+
           const paymentRecord = {
             transactionId,
             studentEmail,
@@ -1005,12 +1090,19 @@ async function run() {
             tuitionId,
             studentId: session.metadata.studentId,
             tutorId,
-            amount: session.amount_total / 100,
+            // gross = student paid, platformFee = our commission, netAmount = tutor earns
+            amount:          grossAmount,
+            platformFee:     platformFee,
+            platformFeePercent: PLATFORM_FEE_PERCENT,
+            netAmount:       netAmount,
             currency: session.currency,
             status: 'paid',
             date: new Date()
           };
           await paymentsCollection.insertOne(paymentRecord);
+
+          // Store the saved record so we can return it to the frontend for display
+          const savedPayment = paymentRecord;
 
           // 3. Update Application Status -> Approved
           await applicationsCollection.updateOne(
@@ -1041,7 +1133,39 @@ async function run() {
             { $set: { status: 'Rejected' } }
           );
 
-          return res.send({ success: true, message: 'Payment Successful & Database Updated' });
+          // 6. Notify the tutor that the payment went through
+          if (tutorEmail && tutorEmail !== 'N/A') {
+            const tuitionDoc = await tuitionsCollection.findOne({ _id: new ObjectId(tuitionId) });
+            await createNotification(
+              tutorEmail,
+              'payment_confirmed',
+              `Payment confirmed for ${tuitionDoc?.subject || 'your tuition'}. You can start the lessons.`,
+              '/dashboard/ongoing-tuitions'
+            );
+          }
+
+          // 7. Notify the student that their hire and payment succeeded
+          if (studentEmail && studentEmail !== 'N/A') {
+            const application = await applicationsCollection.findOne({ _id: new ObjectId(applicationId) });
+            await createNotification(
+              studentEmail,
+              'hire_confirmed',
+              `You have successfully hired ${application?.tutorName || 'the tutor'}. Check your dashboard.`,
+              '/dashboard/applied-tutors'
+            );
+          }
+
+          return res.send({
+            success: true,
+            message: 'Payment Successful & Database Updated',
+            payment: {
+              transactionId: savedPayment.transactionId,
+              amount:        savedPayment.amount,
+              currency:      savedPayment.currency,
+              tutorEmail:    savedPayment.tutorEmail,
+              date:          savedPayment.date,
+            }
+          });
         }
       } catch (error) {
         console.error("Payment Success Error:", error);
@@ -1167,6 +1291,444 @@ async function run() {
       }
     });
 
+    /* ===============================================================
+       DASHBOARD STATS ENDPOINTS
+       =============================================================== */
+
+    // GET: summary numbers for the student dashboard
+    app.get('/dashboard/student-stats', verifyFBToken, verifyStudent, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const [tuitions, applications, payments, bookmarks] = await Promise.all([
+          tuitionsCollection.countDocuments({ studentEmail: email }),
+          applicationsCollection.countDocuments({ recruiterEmail: email }),
+          paymentsCollection.find({ studentEmail: email }).toArray(),
+          bookmarksCollection.countDocuments({ userEmail: email }),
+        ]);
+
+        const totalSpent = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+        const approvedApplications = await applicationsCollection.countDocuments({
+          recruiterEmail: email,
+          status: 'Approved'
+        });
+        const pendingApplications = await applicationsCollection.countDocuments({
+          recruiterEmail: email,
+          status: 'Pending'
+        });
+
+        res.send({
+          tuitionsPosted: tuitions,
+          applicationsReceived: applications,
+          approvedHires: approvedApplications,
+          pendingApplications: pendingApplications,
+          totalSpent: Math.round(totalSpent),
+          savedTuitions: bookmarks,
+          recentPayments: payments.slice(0, 5)
+        });
+      } catch (err) {
+        console.error('Student stats error:', err);
+        res.status(500).send({ message: 'Could not fetch student stats' });
+      }
+    });
+
+    // GET: summary numbers for the tutor dashboard
+    app.get('/dashboard/tutor-stats', verifyFBToken, verifyTutor, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+
+        const [totalApps, approvedApps, payments, reviews] = await Promise.all([
+          applicationsCollection.countDocuments({ tutorEmail: email }),
+          applicationsCollection.countDocuments({ tutorEmail: email, status: 'Approved' }),
+          paymentsCollection.find({ tutorEmail: email }).sort({ date: -1 }).toArray(),
+          reviewsCollection.find({ tutorEmail: email }).toArray(),
+        ]);
+
+        const totalEarned = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+        const avgRating = reviews.length
+          ? (reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length).toFixed(1)
+          : null;
+
+        // Monthly earnings breakdown for the chart (last 6 months)
+        const monthlyMap = {};
+        payments.forEach(p => {
+          const key = new Date(p.date).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+          monthlyMap[key] = (monthlyMap[key] || 0) + (p.amount || 0);
+        });
+        const earningsChart = Object.entries(monthlyMap)
+          .slice(-6)
+          .map(([month, amount]) => ({ month, amount }));
+
+        res.send({
+          totalApplications: totalApps,
+          approvedBookings: approvedApps,
+          pendingApplications: totalApps - approvedApps,
+          totalEarned: Math.round(totalEarned),
+          avgRating,
+          reviewCount: reviews.length,
+          earningsChart,
+          recentPayments: payments.slice(0, 5)
+        });
+      } catch (err) {
+        console.error('Tutor stats error:', err);
+        res.status(500).send({ message: 'Could not fetch tutor stats' });
+      }
+    });
+
+    /* ===============================================================
+       FEATURE 1 – NOTIFICATIONS
+       =============================================================== */
+    // GET: fetch the 20 most recent notifications for the logged-in user
+    app.get('/notifications', verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const items = await notificationsCollection
+          .find({ recipientEmail: email })
+          .sort({ createdAt: -1 })
+          .limit(20)
+          .toArray();
+        res.send(items);
+      } catch (err) {
+        res.status(500).send({ message: 'Could not fetch notifications' });
+      }
+    });
+
+    // PATCH: mark every unread notification as read for the logged-in user
+    app.patch('/notifications/read-all', verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const result = await notificationsCollection.updateMany(
+          { recipientEmail: email, read: false },
+          { $set: { read: true } }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: 'Could not mark notifications as read' });
+      }
+    });
+
+    /* ===============================================================
+       FEATURE 2 – BOOKMARKS (Save tuition posts)
+       =============================================================== */
+    // GET: all bookmarks for the logged-in user
+    app.get('/bookmarks', verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const bookmarks = await bookmarksCollection
+          .find({ userEmail: email })
+          .sort({ savedAt: -1 })
+          .toArray();
+
+        // Enrich each bookmark with the live tuition document
+        const enriched = await Promise.all(
+          bookmarks.map(async (b) => {
+            if (!ObjectId.isValid(b.tuitionId)) return null;
+            const tuition = await tuitionsCollection.findOne({ _id: new ObjectId(b.tuitionId) });
+            return tuition ? { ...b, tuition } : null;
+          })
+        );
+
+        res.send(enriched.filter(Boolean));
+      } catch (err) {
+        res.status(500).send({ message: 'Could not fetch bookmarks' });
+      }
+    });
+
+    // POST: save a tuition
+    app.post('/bookmarks', verifyFBToken, async (req, res) => {
+      try {
+        const { tuitionId } = req.body;
+        const email = req.decoded_email;
+
+        if (!ObjectId.isValid(tuitionId)) {
+          return res.status(400).send({ message: 'Invalid tuition ID' });
+        }
+
+        const existing = await bookmarksCollection.findOne({ userEmail: email, tuitionId });
+        if (existing) {
+          return res.status(400).send({ message: 'Already saved' });
+        }
+
+        const result = await bookmarksCollection.insertOne({
+          userEmail: email,
+          tuitionId,
+          savedAt: new Date()
+        });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: 'Could not save tuition' });
+      }
+    });
+
+    // DELETE: remove a bookmark
+    app.delete('/bookmarks/:tuitionId', verifyFBToken, async (req, res) => {
+      try {
+        const { tuitionId } = req.params;
+        const email = req.decoded_email;
+        const result = await bookmarksCollection.deleteOne({ userEmail: email, tuitionId });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: 'Could not remove bookmark' });
+      }
+    });
+
+    /* ===============================================================
+       FEATURE 3 – REVIEWS (Star ratings by students)
+       =============================================================== */
+    // GET: fetch all reviews for a tutor, identified by their email
+    app.get('/reviews', async (req, res) => {
+      try {
+        const { tutorEmail } = req.query;
+        const query = tutorEmail ? { tutorEmail } : {};
+        const reviews = await reviewsCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+        res.send(reviews);
+      } catch (err) {
+        res.status(500).send({ message: 'Could not fetch reviews' });
+      }
+    });
+
+    // POST: a student leaves a review after a completed booking
+    app.post('/reviews', verifyFBToken, verifyStudent, async (req, res) => {
+      try {
+        const { tutorEmail, applicationId, rating, comment } = req.body;
+        const studentEmail = req.decoded_email;
+
+        if (!tutorEmail || !rating) {
+          return res.status(400).send({ message: 'tutorEmail and rating are required' });
+        }
+        if (rating < 1 || rating > 5) {
+          return res.status(400).send({ message: 'Rating must be between 1 and 5' });
+        }
+
+        // Prevent duplicate reviews for the same booking
+        if (applicationId) {
+          const existing = await reviewsCollection.findOne({ applicationId, studentEmail });
+          if (existing) {
+            return res.status(400).send({ message: 'You have already reviewed this booking' });
+          }
+        }
+
+        // Verify the student actually had an approved booking with this tutor
+        if (applicationId && ObjectId.isValid(applicationId)) {
+          const application = await applicationsCollection.findOne({
+            _id: new ObjectId(applicationId),
+            status: 'Approved'
+          });
+          if (!application) {
+            return res.status(403).send({ message: 'You can only review completed bookings' });
+          }
+        }
+
+        const student = await usersCollection.findOne({ email: studentEmail });
+        const review = {
+          tutorEmail,
+          studentEmail,
+          studentName: student?.displayName || 'Student',
+          studentPhoto: student?.photoURL || null,
+          applicationId: applicationId || null,
+          rating: Number(rating),
+          comment: (comment || '').trim(),
+          createdAt: new Date()
+        };
+
+        const result = await reviewsCollection.insertOne(review);
+
+        // Notify the tutor that they received a review
+        await createNotification(
+          tutorEmail,
+          'new_review',
+          `${review.studentName} left you a ${rating}-star review.`,
+          '/dashboard/my-applications'
+        );
+
+        res.send(result);
+      } catch (err) {
+        console.error('Review error:', err);
+        res.status(500).send({ message: 'Could not save review' });
+      }
+    });
+
+    /* ===============================================================
+       FEATURE 4 – VERIFIED TUTOR BADGE
+       =============================================================== */
+    // PATCH: admin marks a user as a verified tutor
+    app.patch('/users/verify-tutor/:id', verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { verified } = req.body;   // true or false
+
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: 'Invalid user ID' });
+        }
+
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { verified: !!verified, verifiedAt: verified ? new Date() : null } }
+        );
+
+        // Also mark all tutor-card documents in the tutors collection
+        const user = await usersCollection.findOne({ _id: new ObjectId(id) });
+        if (user) {
+          await tutorsCollection.updateMany(
+            { tutorEmail: user.email },
+            { $set: { verified: !!verified } }
+          );
+
+          // Notify the tutor
+          if (verified && user.email) {
+            await createNotification(
+              user.email,
+              'verified',
+              'Congratulations! Your profile has been verified by an admin. Your tutor badge is now active.',
+              '/dashboard/my-applications'
+            );
+          }
+        }
+
+        res.send(result);
+      } catch (err) {
+        console.error('Verify tutor error:', err);
+        res.status(500).send({ message: 'Could not update verification status' });
+      }
+    });
+
+    /* ===============================================================
+       PROFILE ENDPOINTS
+       =============================================================== */
+
+    // GET /profile — full profile merged with role-specific stats
+    app.get('/profile', verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const user  = await usersCollection.findOne({ email });
+        if (!user) return res.status(404).send({ message: 'User not found' });
+
+        const role = user.role || 'Student';
+        let stats  = {};
+
+        if (role === 'Student') {
+          const [tuitions, applications, payments, bookmarks, approved] = await Promise.all([
+            tuitionsCollection.countDocuments({ studentEmail: email }),
+            applicationsCollection.countDocuments({ recruiterEmail: email }),
+            paymentsCollection.find({ studentEmail: email }).toArray(),
+            bookmarksCollection.countDocuments({ userEmail: email }),
+            applicationsCollection.countDocuments({ recruiterEmail: email, status: 'Approved' }),
+          ]);
+          stats = {
+            tuitionsPosted:        tuitions,
+            applicationsReceived:  applications,
+            tutorsHired:           approved,
+            savedTuitions:         bookmarks,
+            totalSpent:            Math.round(payments.reduce((s, p) => s + (p.amount || 0), 0)),
+          };
+        } else if (role === 'Tutor') {
+          const [totalApps, approved, payments, reviews] = await Promise.all([
+            applicationsCollection.countDocuments({ tutorEmail: email }),
+            applicationsCollection.countDocuments({ tutorEmail: email, status: 'Approved' }),
+            paymentsCollection.find({ tutorEmail: email }).toArray(),
+            reviewsCollection.find({ tutorEmail: email }).toArray(),
+          ]);
+          const avgRating = reviews.length
+            ? (reviews.reduce((s, r) => s + r.rating, 0) / reviews.length).toFixed(1)
+            : null;
+          stats = {
+            totalApplications: totalApps,
+            approvedBookings:  approved,
+            totalEarned:       Math.round(payments.reduce((s, p) => s + (p.netAmount || p.amount || 0), 0)),
+            avgRating,
+            reviewCount:       reviews.length,
+          };
+        } else if (role === 'Admin') {
+          const [students, tutors, allTuitions, allPayments] = await Promise.all([
+            usersCollection.countDocuments({ role: 'Student' }),
+            usersCollection.countDocuments({ role: 'Tutor' }),
+            tuitionsCollection.countDocuments({}),
+            paymentsCollection.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]).toArray(),
+          ]);
+          stats = {
+            totalStudents:  students,
+            totalTutors:    tutors,
+            totalTuitions:  allTuitions,
+            platformRevenue: Math.round(allPayments[0]?.total || 0),
+          };
+        }
+
+        // Remove sensitive fields before sending
+        const { _id, ...safeUser } = user;
+        res.send({ ...safeUser, id: _id, stats });
+      } catch (err) {
+        console.error('GET /profile error:', err);
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    // PATCH /profile — update editable profile fields
+    app.patch('/profile', verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded_email;
+        const allowed = ['displayName', 'photoURL', 'phone', 'location', 'bio', 'subjects', 'experience', 'qualification'];
+        const updateFields = { updatedAt: new Date() };
+
+        allowed.forEach(field => {
+          if (req.body[field] !== undefined) updateFields[field] = req.body[field];
+        });
+
+        const result = await usersCollection.updateOne({ email }, { $set: updateFields });
+        res.send(result);
+      } catch (err) {
+        console.error('PATCH /profile error:', err);
+        res.status(500).send({ message: err.message });
+      }
+    });
+
+    /* ===============================================================
+       DEMO LOGIN  –  returns a short-lived Firebase custom token so
+       the frontend can sign in as a demo account without ever seeing
+       a password.  Token expires in 1 hour (Firebase default).
+       =============================================================== */
+    app.post('/demo-login', async (req, res) => {
+      try {
+        const { role } = req.body;
+
+        const emailByRole = {
+          Student: 'demo.student@etuition.com',
+          Tutor:   'demo.tutor@etuition.com',
+          Admin:   'demo.admin@etuition.com',
+        };
+
+        const email = emailByRole[role];
+        if (!email) {
+          return res.status(400).send({ message: 'Invalid role. Use Student, Tutor, or Admin.' });
+        }
+
+        if (!admin.apps.length) {
+          return res.status(503).send({ message: 'Auth service not configured' });
+        }
+
+        // Look up the demo Firebase user by email
+        const fbUser = await admin.auth().getUserByEmail(email);
+
+        // Create a custom token — frontend exchanges it for a real session
+        const customToken = await admin.auth().createCustomToken(fbUser.uid);
+
+        res.send({ token: customToken, email, role });
+      } catch (err) {
+        console.error('Demo login error:', err.message);
+
+        // Common case: seed hasn't been run yet
+        if (err.code === 'auth/user-not-found') {
+          return res.status(404).send({
+            message: 'Demo account not found. Run `npm run seed` on the backend first.',
+          });
+        }
+
+        res.status(500).send({ message: 'Demo login failed', error: err.message });
+      }
+    });
+
     app.get('/', (req, res) => {
       res.send('eTuitionBD API is running');
     });
@@ -1178,11 +1740,13 @@ async function run() {
 }
 
 run().catch(err => {
-  console.error(err);
-  process.exit(1);
+  console.error('Failed to register API routes:', err);
 });
 
-// start express server
-app.listen(port, () => {
-  console.log(`eTuitionBD server listening on port ${port}`);
-});
+if (!process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`eTuitionBD server listening on port ${port}`);
+  });
+}
+
+module.exports = app;
