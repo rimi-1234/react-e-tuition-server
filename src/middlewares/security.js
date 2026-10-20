@@ -11,10 +11,21 @@ export const helmetMiddleware = helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
 });
 
+/** Vercel production + preview URLs for the Edurock client (both spellings of "tuition"). */
+const VERCEL_CLIENT = /^https:\/\/react-e-(?:tuition|tution)(?:-session)?-client[\w.-]*\.vercel\.app$/i;
+
+export function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  const normalized = origin.replace(/\/$/, '');
+  if (env.allowedOrigins.includes(normalized)) return true;
+  if (VERCEL_CLIENT.test(normalized)) return true;
+  return false;
+}
+
 export const corsMiddleware = cors({
   origin(origin, callback) {
-    // Allow same-origin / server-to-server calls (no Origin header) and whitelisted browsers.
-    if (!origin || env.allowedOrigins.includes(origin.replace(/\/$/, ''))) return callback(null, true);
+    // Same-origin / server-to-server calls have no Origin header.
+    if (isAllowedOrigin(origin)) return callback(null, true);
     callback(null, false);
   },
   credentials: true,

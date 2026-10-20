@@ -40,7 +40,9 @@ export function createApp() {
   app.get('/health', meta.health);
 
   // Ensure the database is connected before any API route runs (no-op once connected).
+  // Skip OPTIONS so CORS preflight never waits on Mongo.
   app.use('/api', async (req, _res, next) => {
+    if (req.method === 'OPTIONS') return next();
     try {
       await connectDB();
     } catch (error) {

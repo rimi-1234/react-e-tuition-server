@@ -77,8 +77,11 @@ export const env = Object.freeze({
     ...new Set([
       raw.CLIENT_URL,
       'http://localhost:5173',
+      'http://127.0.0.1:5173',
       'http://localhost:4173',
+      'https://react-e-tuition-client.vercel.app',
       'https://react-e-tution-session-client.vercel.app',
+      'https://react-e-tuition-session-client.vercel.app',
       ...raw.CORS_ORIGINS,
     ]),
   ],
